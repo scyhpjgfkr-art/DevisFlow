@@ -1,22 +1,55 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
+import { escapeHtml, getErrorMessage } from "@/lib/server-utils";
 
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+type DevisRelance = {
+  id: string;
+  numero: string | null;
+  client: string | null;
+  email: string;
+  public_token: string | null;
+  derniere_relance: string | null;
+  date_envoi: string | null;
+  date_creation: string | null;
+};
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+type RelanceResult = {
+  devis: string | null;
+  success: boolean;
+  error?: unknown;
+};
 
 export async function GET(request: Request) {
   try {
     const cronSecret = process.env.CRON_SECRET;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const resendApiKey = process.env.RESEND_API_KEY;
     const authHeader = request.headers.get("authorization");
 
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
+    if (!cronSecret) {
+      return NextResponse.json(
+        { error: "CRON_SECRET manquant dans .env.local" },
+        { status: 500 }
+      );
+    }
+
+    if (authHeader !== `Bearer ${cronSecret}`) {
       return NextResponse.json({ error: "Non autorisé" }, { status: 401 });
     }
+
+    if (!supabaseUrl || !serviceRoleKey || !resendApiKey) {
+      return NextResponse.json(
+        { error: "Variables Supabase ou Resend manquantes dans .env.local" },
+        { status: 500 }
+      );
+    }
+
+    const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
+    const resend = new Resend(resendApiKey);
+    const fromEmail =
+      process.env.RESEND_FROM_EMAIL || "DevisFlow <onboarding@resend.dev>";
 
     const now = new Date();
     const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
@@ -28,14 +61,15 @@ export async function GET(request: Request) {
       .not("email", "is", null)
       .or(
         `derniere_relance.is.null,derniere_relance.lt.${threeDaysAgo.toISOString()}`
-      );
+      )
+      .returns<DevisRelance[]>();
 
     if (error) {
       console.error("Erreur chargement devis à relancer:", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    const results: any[] = [];
+    const results: RelanceResult[] = [];
 
     for (const d of devis || []) {
       const lastDate = d.derniere_relance || d.date_envoi || d.date_creation;
@@ -52,37 +86,37 @@ export async function GET(request: Request) {
         : "";
 
       const { error: emailError } = await resend.emails.send({
-        from: "DevisFlow <onboarding@resend.dev>",
+        from: fromEmail,
         to: d.email,
-        subject: `Relance concernant votre devis ${d.numero}`,
+        subject: `Relance concernant votre devis ${d.numero || ""}`,
         html: `
-          <div style="font-family:Arial,sans-serif;color:#111;line-height:1.6;">
-            <h1>Relance devis ${d.numero}</h1>
+          <div style="margin:0;background:#f8fafc;padding:32px 0;font-family:Arial,sans-serif;color:#0f172a;line-height:1.6;">
+            <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
+              <div style="background:#0f172a;color:#ffffff;padding:26px 32px;">
+                <p style="margin:0;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#cbd5e1;">Suivi de devis</p>
+                <h1 style="margin:10px 0 0;font-size:24px;">Devis ${escapeHtml(d.numero || "")}</h1>
+              </div>
 
-            <p>Bonjour ${d.client || ""},</p>
+              <div style="padding:28px 32px;">
+                <p style="margin:0 0 14px;">Bonjour ${escapeHtml(d.client || "")},</p>
+                <p style="margin:0 0 20px;">
+                  Nous revenons vers vous concernant ce devis. Vous pouvez le
+                  consulter, l'accepter ou répondre à cet email si vous avez une question.
+                </p>
 
-            <p>
-              Nous revenons vers vous concernant le devis <strong>${d.numero}</strong>.
-            </p>
+                ${
+                  acceptUrl
+                    ? `<p style="margin:28px 0 0;">
+                        <a href="${escapeHtml(acceptUrl)}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
+                          Consulter et répondre au devis
+                        </a>
+                      </p>`
+                    : ""
+                }
 
-            <p>
-              Vous pouvez répondre à cet email si vous avez une question.
-            </p>
-
-            ${
-              acceptUrl
-                ? `<p style="margin-top:24px;">
-                    <a href="${acceptUrl}" style="background:#111;color:#fff;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
-                      Consulter / accepter le devis
-                    </a>
-                  </p>`
-                : ""
-            }
-
-            <p style="margin-top:24px;">
-              Bien cordialement,<br/>
-              L'équipe
-            </p>
+                <p style="margin:28px 0 0;">Bien cordialement,<br/><strong>L'équipe</strong></p>
+              </div>
+            </div>
           </div>
         `,
       });
@@ -127,11 +161,11 @@ export async function GET(request: Request) {
       sent: results.filter((r) => r.success).length,
       results,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Erreur auto-relances:", error);
 
     return NextResponse.json(
-      { error: error?.message || "Erreur auto-relances" },
+      { error: getErrorMessage(error, "Erreur auto-relances") },
       { status: 500 }
     );
   }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
+import { getErrorMessage } from "@/lib/server-utils";
 
 export async function POST(request: Request) {
   try {
@@ -49,11 +50,12 @@ export async function POST(request: Request) {
 
     try {
       event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
-    } catch (error: any) {
-      console.error("Erreur vérification webhook Stripe:", error.message);
+    } catch (error: unknown) {
+      const message = getErrorMessage(error, "Signature webhook invalide");
+      console.error("Erreur vérification webhook Stripe:", message);
 
       return NextResponse.json(
-        { error: `Webhook Error: ${error.message}` },
+        { error: `Webhook Error: ${message}` },
         { status: 400 }
       );
     }
@@ -61,9 +63,36 @@ export async function POST(request: Request) {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
 
+      const paiementType = session.metadata?.type;
+      const devisId = session.metadata?.devisId;
       const factureId = session.metadata?.factureId;
 
-      if (factureId) {
+      if (paiementType === "devis_acompte" && devisId) {
+        const paymentIntentId =
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id || null;
+
+        const { error } = await supabaseAdmin
+          .from("devis")
+          .update({
+            acompte_statut: "paid",
+            acompte_session_id: session.id,
+            acompte_payment_intent_id: paymentIntentId,
+            acompte_date_paiement: new Date().toISOString(),
+            acompte_montant_paye: Number(session.amount_total || 0) / 100,
+          })
+          .eq("id", devisId);
+
+        if (error) {
+          console.error("Erreur mise à jour acompte devis:", error);
+
+          return NextResponse.json(
+            { error: error.message },
+            { status: 500 }
+          );
+        }
+      } else if (factureId) {
         const { error } = await supabaseAdmin
           .from("factures")
           .update({ statut: "Payée" })
@@ -81,11 +110,11 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ received: true });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Erreur traitement webhook Stripe:", error);
 
     return NextResponse.json(
-      { error: error?.message || "Erreur webhook Stripe" },
+      { error: getErrorMessage(error, "Erreur webhook Stripe") },
       { status: 500 }
     );
   }

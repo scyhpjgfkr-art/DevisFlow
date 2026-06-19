@@ -6,6 +6,10 @@ import { useSearchParams } from "next/navigation";
 export default function PaiementSuccessContent() {
   const searchParams = useSearchParams();
   const sessionId = searchParams.get("session_id");
+  const token = searchParams.get("token");
+  const type = searchParams.get("type");
+  const retourHref = token ? `/devis/${token}` : "/client";
+  const retourLabel = token ? "Retour au devis" : "Retour";
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-slate-950 p-6 text-white">
@@ -18,7 +22,9 @@ export default function PaiementSuccessContent() {
 
         <p className="mt-4 text-slate-300">
           Votre paiement a bien été pris en compte. Vous pouvez fermer cette page
-          ou retourner à votre espace client.
+          {type === "acompte"
+            ? " ou retourner au devis."
+            : " ou retourner à la page précédente."}
         </p>
 
         {sessionId && (
@@ -29,10 +35,10 @@ export default function PaiementSuccessContent() {
 
         <div className="mt-8 flex justify-center">
           <Link
-            href="/client"
+            href={retourHref}
             className="rounded-xl bg-white px-6 py-3 font-semibold text-black"
           >
-            Retour au portail client
+            {retourLabel}
           </Link>
         </div>
       </section>

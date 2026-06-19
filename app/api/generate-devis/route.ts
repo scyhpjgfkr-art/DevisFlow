@@ -1,15 +1,19 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+import {
+  getErrorMessage,
+  requireSupabaseUser,
+} from "@/lib/server-utils";
 
 export async function POST(request: Request) {
   try {
-    const { prompt } = await request.json();
+    const auth = await requireSupabaseUser(request);
+    if ("errorResponse" in auth) return auth.errorResponse;
 
-    if (!process.env.OPENAI_API_KEY) {
+    const { prompt } = (await request.json()) as { prompt?: string };
+    const apiKey = process.env.OPENAI_API_KEY;
+
+    if (!apiKey) {
       return NextResponse.json(
         { error: "OPENAI_API_KEY manquante dans .env.local" },
         { status: 500 }
@@ -22,6 +26,8 @@ export async function POST(request: Request) {
         { status: 400 }
       );
     }
+
+    const openai = new OpenAI({ apiKey });
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -73,12 +79,12 @@ Réponds uniquement avec ce JSON :
     const json = JSON.parse(content);
 
     return NextResponse.json(json);
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Erreur OpenAI :", error);
 
     return NextResponse.json(
       {
-        error: error?.message || "Erreur génération IA",
+        error: getErrorMessage(error, "Erreur génération IA"),
       },
       { status: 500 }
     );

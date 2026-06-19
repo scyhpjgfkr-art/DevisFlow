@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -9,6 +9,7 @@ import ParametresEntreprise from "./ParametresEntreprise";
 import OnboardingPremiersPas from "./OnboardingPremiersPas";
 
 type Statut = "Brouillon" | "Envoyé" | "À relancer" | "Accepté" | "Refusé";
+type AcompteType = "none" | "percent" | "fixed";
 
 type LigneDevis = {
   reference: string;
@@ -32,6 +33,10 @@ type Devis = {
   dateEnvoi?: string;
   derniereRelance?: string;
   publicToken?: string;
+  acompteType?: AcompteType;
+  acompteMontant?: number;
+  acomptePourcentage?: number;
+  acompteStatut?: string;
 };
 
 type Settings = {
@@ -84,6 +89,94 @@ type Facture = {
   lignes?: FactureLigne[];
 };
 
+type ClientRow = {
+  id?: string;
+  nom?: string | null;
+  societe?: string | null;
+  email?: string | null;
+  telephone?: string | null;
+  adresse?: string | null;
+  ville?: string | null;
+};
+
+type ProduitRow = {
+  id?: string;
+  reference?: string | null;
+  nom?: string | null;
+  designation?: string | null;
+  prix_unitaire?: number | null;
+};
+
+type LigneFactureRow = {
+  reference?: string | null;
+  designation?: string | null;
+  quantite?: number | null;
+  prix_unitaire?: number | null;
+};
+
+type FactureRow = {
+  id?: string;
+  devis_id?: string | null;
+  numero?: string | null;
+  client?: string | null;
+  societe?: string | null;
+  email?: string | null;
+  telephone?: string | null;
+  total_ht?: number | null;
+  total_ttc?: number | null;
+  date_creation?: string | null;
+  statut?: Facture["statut"] | null;
+  lignes_factures?: LigneFactureRow[] | null;
+};
+
+type LigneDevisRow = {
+  reference?: string | null;
+  designation?: string | null;
+  quantite?: number | null;
+  prix_unitaire?: number | null;
+};
+
+type DevisRow = {
+  id?: string;
+  numero?: string | null;
+  client?: string | null;
+  societe?: string | null;
+  email?: string | null;
+  telephone?: string | null;
+  echeance?: string | null;
+  port_ht?: number | null;
+  statut?: Statut | null;
+  date_creation?: string | null;
+  date_envoi?: string | null;
+  derniere_relance?: string | null;
+  public_token?: string | null;
+  acompte_type?: AcompteType | null;
+  acompte_montant?: number | null;
+  acompte_pourcentage?: number | null;
+  acompte_statut?: string | null;
+  lignes_devis?: LigneDevisRow[] | null;
+};
+
+type GeneratedDevis = {
+  client?: string;
+  societe?: string;
+  email?: string;
+  telephone?: string;
+  echeance?: string;
+  portHT?: number;
+  lignes?: LigneDevis[];
+};
+
+type DevisAvecStatutAuto = Devis & {
+  statutAffiche: Statut;
+};
+
+type AutoTableDoc = jsPDF & {
+  lastAutoTable?: {
+    finalY: number;
+  };
+};
+
 export default function Dashboard({
   session,
   logout,
@@ -92,7 +185,13 @@ export default function Dashboard({
   logout: () => void;
 }) {
   const [onglet, setOnglet] = useState<
-    "dashboard" | "devis" | "clients" | "catalogue" | "factures" | "parametres"
+    | "dashboard"
+    | "devis"
+    | "clients"
+    | "catalogue"
+    | "factures"
+    | "parametres"
+    | "tarifs"
   >("dashboard");
 
   const [devis, setDevis] = useState<Devis[]>([]);
@@ -122,6 +221,9 @@ export default function Dashboard({
   const [telephone, setTelephone] = useState("");
   const [echeance, setEcheance] = useState("À réception de facture");
   const [portHT, setPortHT] = useState(0);
+  const [acompteType, setAcompteType] = useState<AcompteType>("none");
+  const [acompteMontant, setAcompteMontant] = useState(0);
+  const [acomptePourcentage, setAcomptePourcentage] = useState(30);
 
   const [promptIA, setPromptIA] = useState("");
   const [loadingIA, setLoadingIA] = useState(false);
@@ -146,15 +248,7 @@ export default function Dashboard({
     { reference: "", designation: "", quantite: 1, prixUnitaire: 0 },
   ]);
 
-  useEffect(() => {
-    chargerDevis();
-    chargerSettings();
-    chargerClients();
-    chargerProduits();
-    chargerFactures();
-  }, []);
-
-  async function chargerSettings() {
+  const chargerSettings = useCallback(async () => {
     const { data } = await supabase
       .from("entreprise_settings")
       .select("*")
@@ -172,7 +266,21 @@ export default function Dashboard({
         tva: data.tva || "",
       });
     }
-  }
+  }, [session.user.id]);
+
+  useEffect(() => {
+    const chargerDonnees = async () => {
+      await Promise.all([
+        chargerDevis(),
+        chargerSettings(),
+        chargerClients(),
+        chargerProduits(),
+        chargerFactures(),
+      ]);
+    };
+
+    void chargerDonnees();
+  }, [chargerSettings]);
 
   async function sauvegarderSettings() {
     const { error } = await supabase.from("entreprise_settings").upsert({
@@ -186,7 +294,7 @@ export default function Dashboard({
       return;
     }
 
-    alert("Paramètres sauvegardés ✅");
+    alert("Paramètres sauvegardés.");
   }
 
   async function chargerClients() {
@@ -202,7 +310,7 @@ export default function Dashboard({
     }
 
     setClients(
-      data.map((c: any) => ({
+      ((data as ClientRow[] | null) || []).map((c) => ({
         id: c.id,
         nom: c.nom || "",
         societe: c.societe || "",
@@ -267,7 +375,7 @@ export default function Dashboard({
     }
 
     setProduits(
-      data.map((p: any) => ({
+      ((data as ProduitRow[] | null) || []).map((p) => ({
         id: p.id,
         reference: p.reference || "",
         nom: p.nom || "",
@@ -326,7 +434,7 @@ export default function Dashboard({
     }
 
     setFactures(
-      data.map((f: any) => ({
+      ((data as FactureRow[] | null) || []).map((f) => ({
         id: f.id,
         devisId: f.devis_id || undefined,
         numero: f.numero || "",
@@ -336,10 +444,10 @@ export default function Dashboard({
         telephone: f.telephone || "",
         totalHT: Number(f.total_ht || 0),
         totalTTC: Number(f.total_ttc || 0),
-        dateCreation: f.date_creation,
+        dateCreation: f.date_creation || new Date().toISOString(),
         statut: f.statut || "À payer",
         lignes:
-          f.lignes_factures?.map((l: any) => ({
+          f.lignes_factures?.map((l) => ({
             reference: l.reference || "",
             designation: l.designation || "",
             quantite: Number(l.quantite || 1),
@@ -406,7 +514,7 @@ export default function Dashboard({
     await chargerFactures();
     await chargerDevis();
 
-    alert("Facture détaillée créée ✅");
+    alert("Facture détaillée créée.");
     setOnglet("factures");
   }
 
@@ -485,7 +593,7 @@ export default function Dashboard({
       },
     });
 
-    const finalY = (doc as any).lastAutoTable.finalY + 10;
+    const finalY = ((doc as AutoTableDoc).lastAutoTable?.finalY ?? 110) + 10;
 
     doc.setFontSize(10);
     doc.text(`Total HT : ${f.totalHT.toFixed(2)} €`, 135, finalY);
@@ -514,25 +622,29 @@ export default function Dashboard({
     }
 
     setDevis(
-      data.map((d: any) => ({
+      ((data as DevisRow[] | null) || []).map((d) => ({
         id: d.id,
-        numero: d.numero,
-        client: d.client,
+        numero: d.numero || "",
+        client: d.client || "",
         societe: d.societe || "",
         email: d.email || "",
         telephone: d.telephone || "",
         echeance: d.echeance || "À réception de facture",
         portHT: Number(d.port_ht || 0),
-        statut: d.statut,
-        dateCreation: d.date_creation,
+        statut: d.statut || "Brouillon",
+        dateCreation: d.date_creation || new Date().toISOString(),
         dateEnvoi: d.date_envoi || undefined,
         derniereRelance: d.derniere_relance || undefined,
         publicToken: d.public_token || undefined,
-        lignes: d.lignes_devis.map((l: any) => ({
+        acompteType: d.acompte_type || "none",
+        acompteMontant: Number(d.acompte_montant || 0),
+        acomptePourcentage: Number(d.acompte_pourcentage || 0),
+        acompteStatut: d.acompte_statut || undefined,
+        lignes: (d.lignes_devis || []).map((l) => ({
           reference: l.reference || "",
-          designation: l.designation,
-          quantite: Number(l.quantite),
-          prixUnitaire: Number(l.prix_unitaire),
+          designation: l.designation || "",
+          quantite: Number(l.quantite || 1),
+          prixUnitaire: Number(l.prix_unitaire || 0),
         })),
       }))
     );
@@ -556,6 +668,13 @@ export default function Dashboard({
     return `${window.location.origin}/devis/${d.publicToken}`;
   }
 
+  function apiHeaders() {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${session.access_token}`,
+    };
+  }
+
   async function copierLienClient(d: Devis) {
     const lien = getClientLink(d);
 
@@ -565,27 +684,7 @@ export default function Dashboard({
     }
 
     await navigator.clipboard.writeText(lien);
-    alert("Lien client copié ✅");
-  }
-
-  function statutBadge(statut: string) {
-    if (statut === "Accepté" || statut === "Payée") {
-      return "border-green-500 bg-green-500/10 text-green-300";
-    }
-
-    if (statut === "Refusé") {
-      return "border-red-500 bg-red-500/10 text-red-300";
-    }
-
-    if (statut === "À relancer" || statut === "À payer") {
-      return "border-yellow-500 bg-yellow-500/10 text-yellow-300";
-    }
-
-    if (statut === "Envoyé") {
-      return "border-blue-500 bg-blue-500/10 text-blue-300";
-    }
-
-    return "border-slate-600 bg-slate-800 text-slate-300";
+    alert("Lien client copié.");
   }
 
   function joursDepuis(date?: string) {
@@ -610,6 +709,9 @@ export default function Dashboard({
     setTelephone("");
     setEcheance("À réception de facture");
     setPortHT(0);
+    setAcompteType("none");
+    setAcompteMontant(0);
+    setAcomptePourcentage(30);
     setPromptIA("");
     setLignes([{ reference: "", designation: "", quantite: 1, prixUnitaire: 0 }]);
     setPreview(null);
@@ -665,19 +767,17 @@ export default function Dashboard({
     try {
       const response = await fetch("/api/generate-devis", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: apiHeaders(),
         body: JSON.stringify({
           prompt: promptIA,
         }),
       });
 
-      const data = await response.json();
+      const data = (await response.json()) as GeneratedDevis & { error?: string };
 
       if (!response.ok) {
         console.error(data);
-        alert(data?.error || "Erreur IA côté serveur.");
+        alert(data?.error || "Erreur de génération côté serveur.");
         setLoadingIA(false);
         return;
       }
@@ -691,7 +791,7 @@ export default function Dashboard({
 
       if (Array.isArray(data.lignes) && data.lignes.length > 0) {
         setLignes(
-          data.lignes.map((ligne: any) => ({
+          data.lignes.map((ligne) => ({
             reference: ligne.reference || "",
             designation: ligne.designation || "",
             quantite: Number(ligne.quantite || 1),
@@ -700,10 +800,10 @@ export default function Dashboard({
         );
       }
 
-      alert("Devis généré avec IA ✅");
+      alert("Devis généré.");
     } catch (error) {
       console.error(error);
-      alert("Erreur IA");
+      alert("Erreur de génération.");
     }
 
     setLoadingIA(false);
@@ -730,6 +830,10 @@ export default function Dashboard({
       dateEnvoi: editingDevis?.dateEnvoi,
       derniereRelance: editingDevis?.derniereRelance,
       publicToken: editingDevis?.publicToken,
+      acompteType,
+      acompteMontant: acompteType === "fixed" ? acompteMontant : 0,
+      acomptePourcentage: acompteType === "percent" ? acomptePourcentage : 0,
+      acompteStatut: editingDevis?.acompteStatut,
     });
   }
 
@@ -747,6 +851,10 @@ export default function Dashboard({
           echeance: preview.echeance,
           port_ht: preview.portHT,
           statut: preview.statut,
+          acompte_type: preview.acompteType || "none",
+          acompte_montant: preview.acompteType === "fixed" ? preview.acompteMontant || 0 : 0,
+          acompte_pourcentage:
+            preview.acompteType === "percent" ? preview.acomptePourcentage || 0 : 0,
         })
         .eq("id", preview.id);
 
@@ -776,6 +884,11 @@ export default function Dashboard({
           statut: preview.statut,
           date_creation: preview.dateCreation,
           public_token: preview.publicToken || crypto.randomUUID(),
+          acompte_type: preview.acompteType || "none",
+          acompte_montant: preview.acompteType === "fixed" ? preview.acompteMontant || 0 : 0,
+          acompte_pourcentage:
+            preview.acompteType === "percent" ? preview.acomptePourcentage || 0 : 0,
+          acompte_statut: "not_required",
         })
         .select()
         .single();
@@ -808,6 +921,9 @@ export default function Dashboard({
     setTelephone(d.telephone);
     setEcheance(d.echeance);
     setPortHT(d.portHT);
+    setAcompteType(d.acompteType || "none");
+    setAcompteMontant(d.acompteMontant || 0);
+    setAcomptePourcentage(d.acomptePourcentage || 30);
     setLignes(d.lignes);
     setEditingDevis(d);
     setShowForm(true);
@@ -868,9 +984,7 @@ export default function Dashboard({
 
     const response = await fetch("/api/relance-devis", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: apiHeaders(),
       body: JSON.stringify({
         client: d.client,
         email: d.email,
@@ -899,7 +1013,7 @@ export default function Dashboard({
       .eq("id", d.id);
 
     await chargerDevis();
-    alert("Relance envoyée par email ✅");
+    alert("Relance envoyée par email.");
   }
 
   async function envoyerParEmail(d: Devis) {
@@ -914,9 +1028,7 @@ export default function Dashboard({
 
     const response = await fetch("/api/send-devis", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: apiHeaders(),
       body: JSON.stringify({
         client: d.client,
         email: d.email,
@@ -947,48 +1059,70 @@ export default function Dashboard({
       .eq("id", d.id);
 
     await chargerDevis();
-    alert("Devis envoyé par email ✅");
+    alert("Devis envoyé par email.");
   }
 
   function telechargerPDF(d: Devis) {
     const doc = new jsPDF();
 
-    doc.setFillColor(8, 14, 28);
-    doc.rect(0, 0, 210, 34, "F");
+    const totalHTValue = totalHT(d.lignes, d.portHT);
+    const totalTVAValue = totalTVA(d.lignes, d.portHT);
+    const totalTTCValue = totalTTC(d.lignes, d.portHT);
+    const acompteValue =
+      d.acompteType === "percent"
+        ? totalTTCValue * (Number(d.acomptePourcentage || 0) / 100)
+        : d.acompteType === "fixed"
+        ? Number(d.acompteMontant || 0)
+        : 0;
+
+    doc.setFillColor(15, 23, 42);
+    doc.rect(0, 0, 210, 36, "F");
 
     doc.setTextColor(255, 255, 255);
     doc.setFontSize(22);
-    doc.text("DEVIS", 14, 21);
+    doc.setFont("helvetica", "bold");
+    doc.text("Devis", 14, 22);
 
-    doc.setFontSize(10);
-    doc.text(d.numero, 150, 15);
-    doc.text(new Date(d.dateCreation).toLocaleDateString("fr-FR"), 150, 23);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.text(`N° ${d.numero}`, 145, 15);
+    doc.text(`Date : ${new Date(d.dateCreation).toLocaleDateString("fr-FR")}`, 145, 22);
+    doc.text(`Statut : ${d.statut}`, 145, 29);
 
-    doc.setTextColor(0, 0, 0);
+    doc.setTextColor(15, 23, 42);
+    doc.setFontSize(13);
+    doc.setFont("helvetica", "bold");
+    doc.text(settings.nom || "Entreprise", 14, 51);
 
-    doc.setFontSize(14);
-    doc.text(settings.nom || "Entreprise", 14, 49);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(71, 85, 105);
+    doc.text(settings.adresse || "-", 14, 59);
+    doc.text(settings.ville || "-", 14, 66);
+    doc.text(`Téléphone : ${settings.telephone || "-"}`, 14, 73);
+    doc.text(`Email : ${settings.email || "-"}`, 14, 80);
+    doc.text(`SIRET : ${settings.siret || "-"}`, 14, 87);
+    doc.text(`TVA : ${settings.tva || "-"}`, 14, 94);
 
-    doc.setFontSize(10);
-    doc.text(settings.adresse || "-", 14, 57);
-    doc.text(settings.ville || "-", 14, 64);
-    doc.text(`Tél : ${settings.telephone || "-"}`, 14, 71);
-    doc.text(`Email : ${settings.email || "-"}`, 14, 78);
-    doc.text(`SIRET : ${settings.siret || "-"}`, 14, 85);
-    doc.text(`TVA : ${settings.tva || "-"}`, 14, 92);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(118, 46, 78, 54, 2, 2);
 
-    doc.setFontSize(14);
-    doc.text("Client", 120, 49);
+    doc.setTextColor(15, 23, 42);
+    doc.setFontSize(11);
+    doc.setFont("helvetica", "bold");
+    doc.text("Client", 124, 57);
 
-    doc.setFontSize(10);
-    doc.text(d.client || "-", 120, 57);
-    doc.text(d.societe || "-", 120, 64);
-    doc.text(d.email || "-", 120, 71);
-    doc.text(d.telephone || "-", 120, 78);
-    doc.text(`Échéance : ${d.echeance || "-"}`, 120, 92);
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(71, 85, 105);
+    doc.text(d.client || "-", 124, 67);
+    doc.text(d.societe || "-", 124, 74);
+    doc.text(d.email || "-", 124, 81);
+    doc.text(d.telephone || "-", 124, 88);
+    doc.text(`Échéance : ${d.echeance || "-"}`, 124, 95);
 
     autoTable(doc, {
-      startY: 110,
+      startY: 114,
       head: [["Référence", "Désignation", "Qté", "PU HT", "Montant HT"]],
       body: d.lignes.map((l) => [
         l.reference || "-",
@@ -999,10 +1133,17 @@ export default function Dashboard({
       ]),
       styles: {
         fontSize: 9,
-        cellPadding: 3,
+        cellPadding: 3.5,
+        lineColor: [226, 232, 240],
+        lineWidth: 0.1,
       },
       headStyles: {
-        fillColor: [8, 14, 28],
+        fillColor: [15, 23, 42],
+        textColor: [255, 255, 255],
+        fontStyle: "bold",
+      },
+      alternateRowStyles: {
+        fillColor: [248, 250, 252],
       },
       columnStyles: {
         0: { cellWidth: 28 },
@@ -1013,24 +1154,51 @@ export default function Dashboard({
       },
     });
 
-    const finalY = (doc as any).lastAutoTable.finalY + 10;
+    const finalY = ((doc as AutoTableDoc).lastAutoTable?.finalY ?? 114) + 10;
+    const totalBoxY = Math.min(finalY, 194);
 
-    doc.setFontSize(10);
-    doc.text(`Port HT : ${d.portHT.toFixed(2)} €`, 135, finalY);
-    doc.text(`Total HT : ${totalHT(d.lignes, d.portHT).toFixed(2)} €`, 135, finalY + 8);
-    doc.text(`TVA 20% : ${totalTVA(d.lignes, d.portHT).toFixed(2)} €`, 135, finalY + 16);
-
-    doc.setFontSize(15);
-    doc.text(`Total TTC : ${totalTTC(d.lignes, d.portHT).toFixed(2)} €`, 135, finalY + 28);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(118, totalBoxY, 78, 44, 2, 2);
 
     doc.setFontSize(9);
-    doc.text("Conditions :", 14, 235);
-    doc.text("• Devis valable 30 jours.", 14, 243);
-    doc.text("• Acompte selon conditions convenues.", 14, 251);
-    doc.text("• Solde payable à la livraison ou selon échéance indiquée.", 14, 259);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Port HT`, 124, totalBoxY + 10);
+    doc.text(`${d.portHT.toFixed(2)} €`, 174, totalBoxY + 10, { align: "right" });
+    doc.text(`Total HT`, 124, totalBoxY + 18);
+    doc.text(`${totalHTValue.toFixed(2)} €`, 174, totalBoxY + 18, { align: "right" });
+    doc.text(`TVA 20%`, 124, totalBoxY + 26);
+    doc.text(`${totalTVAValue.toFixed(2)} €`, 174, totalBoxY + 26, { align: "right" });
 
-    doc.text("Signature client précédée de la mention « Bon pour accord » :", 14, 278);
-    doc.line(115, 278, 195, 278);
+    doc.setFillColor(15, 23, 42);
+    doc.roundedRect(118, totalBoxY + 32, 78, 12, 2, 2, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.text(`Total TTC`, 124, totalBoxY + 40);
+    doc.text(`${totalTTCValue.toFixed(2)} €`, 190, totalBoxY + 40, { align: "right" });
+
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(15, 23, 42);
+    doc.setFontSize(10);
+    doc.text("Conditions commerciales", 14, 220);
+
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(71, 85, 105);
+    doc.setFontSize(9);
+    doc.text("Devis valable 30 jours à compter de sa date d'émission.", 14, 229);
+    doc.text(`Règlement : ${d.echeance || "selon conditions indiquées"}.`, 14, 237);
+    doc.text(
+      acompteValue > 0
+        ? `Acompte à la validation : ${acompteValue.toFixed(2)} € TTC.`
+        : "Acompte : selon conditions convenues.",
+      14,
+      245
+    );
+    doc.text("Solde payable selon l'échéance convenue entre les parties.", 14, 253);
+
+    doc.setDrawColor(203, 213, 225);
+    doc.line(14, 268, 96, 268);
+    doc.setTextColor(71, 85, 105);
+    doc.text("Signature client précédée de la mention Bon pour accord", 14, 275);
 
     doc.save(`${d.numero}.pdf`);
   }
@@ -1088,24 +1256,30 @@ export default function Dashboard({
       : devisEnvoyes.length > 0
       ? "Suivre les devis envoyés"
       : "Créer un nouveau devis";
-      const entrepriseOk =
-  Boolean(settings.nom?.trim()) &&
-  Boolean(settings.email?.trim()) &&
-  Boolean(settings.siret?.trim());
+  const entrepriseOk =
+    Boolean(settings.nom?.trim()) &&
+    Boolean(settings.email?.trim()) &&
+    Boolean(settings.siret?.trim());
+  const montantAcomptePreview =
+    acompteType === "percent"
+      ? totalTTC(lignes, portHT) * (Number(acomptePourcentage || 0) / 100)
+      : acompteType === "fixed"
+      ? Number(acompteMontant || 0)
+      : 0;
 
   return (
-    <main className="min-h-screen bg-slate-950 p-8 text-white">
+    <main className="min-h-screen bg-slate-950 p-6 text-white md:p-8">
       <div className="mx-auto max-w-7xl">
-        <header className="rounded-3xl border border-slate-800 bg-gradient-to-br from-slate-900 via-slate-950 to-violet-950 p-8 shadow-2xl">
+        <header className="rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
             <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.3em] text-violet-300">
-                Mission Control
+              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                Activité commerciale
               </p>
-              <h1 className="mt-3 text-5xl font-black">🌌 DevisFlow</h1>
+              <h1 className="mt-3 text-4xl font-black">DevisFlow</h1>
               <p className="mt-3 max-w-2xl text-slate-300">
-                Créez, envoyez, relancez et transformez vos devis en factures.
-                Objectif : faire gagner du temps et convertir plus de clients.
+                Suivez les devis envoyés, les accords signés et les montants à
+                relancer depuis une vue claire.
               </p>
             </div>
 
@@ -1126,12 +1300,13 @@ export default function Dashboard({
         </header>
 
         <div className="mt-8 flex flex-wrap gap-3">
-          <Tab label="🏠 Tableau de bord" active={onglet === "dashboard"} onClick={() => setOnglet("dashboard")} />
-          <Tab label="📄 Devis" active={onglet === "devis"} onClick={() => setOnglet("devis")} />
-          <Tab label="👥 Clients" active={onglet === "clients"} onClick={() => setOnglet("clients")} />
-          <Tab label="📦 Catalogue" active={onglet === "catalogue"} onClick={() => setOnglet("catalogue")} />
-          <Tab label="🧾 Factures" active={onglet === "factures"} onClick={() => setOnglet("factures")} />
-          <Tab label="⚙️ Paramètres" active={onglet === "parametres"} onClick={() => setOnglet("parametres")} />
+          <Tab label="Tableau de bord" active={onglet === "dashboard"} onClick={() => setOnglet("dashboard")} />
+          <Tab label="Devis" active={onglet === "devis"} onClick={() => setOnglet("devis")} />
+          <Tab label="Clients" active={onglet === "clients"} onClick={() => setOnglet("clients")} />
+          <Tab label="Catalogue" active={onglet === "catalogue"} onClick={() => setOnglet("catalogue")} />
+          <Tab label="Factures" active={onglet === "factures"} onClick={() => setOnglet("factures")} />
+          <Tab label="Tarifs" active={onglet === "tarifs"} onClick={() => setOnglet("tarifs")} />
+          <Tab label="Paramètres" active={onglet === "parametres"} onClick={() => setOnglet("parametres")} />
         </div>
 
         {onglet === "parametres" && (
@@ -1144,24 +1319,26 @@ export default function Dashboard({
 
 
         {onglet === "dashboard" && (
-          <><OnboardingPremiersPas
-  entrepriseOk={entrepriseOk}
-  clientsCount={clients.length}
-  produitsCount={produits.length}
-  devisCount={devis.length}
-  onGoParametres={() => setOnglet("parametres")}
-  onGoClients={() => setOnglet("clients")}
-  onGoCatalogue={() => setOnglet("catalogue")}
-  onGoDevis={() => {
-    resetForm();
-    setShowForm(true);
-    setOnglet("devis");
-  }}
-/>
+          <>
+            <OnboardingPremiersPas
+              entrepriseOk={entrepriseOk}
+              clientsCount={clients.length}
+              produitsCount={produits.length}
+              devisCount={devis.length}
+              onGoParametres={() => setOnglet("parametres")}
+              onGoClients={() => setOnglet("clients")}
+              onGoCatalogue={() => setOnglet("catalogue")}
+              onGoDevis={() => {
+                resetForm();
+                setShowForm(true);
+                setOnglet("devis");
+              }}
+            />
+
             <section className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-4">
               <ActionCard
-                title="+ Nouveau devis"
-                description="Créer une mission commerciale"
+                title="Nouveau devis"
+                description="Préparer une proposition client"
                 onClick={() => {
                   resetForm();
                   setShowForm(true);
@@ -1169,64 +1346,65 @@ export default function Dashboard({
                 }}
               />
               <ActionCard
-                title="📊 Pipeline"
+                title="Pipeline"
                 description="Voir les devis par statut"
                 onClick={() => setOnglet("dashboard")}
               />
               <ActionCard
-                title="👥 Clients"
+                title="Clients"
                 description="Gérer la base clients"
                 onClick={() => setOnglet("clients")}
               />
               <ActionCard
-                title="📦 Catalogue"
+                title="Catalogue"
                 description="Préparer les produits récurrents"
                 onClick={() => setOnglet("catalogue")}
               />
             </section>
 
             <section className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-4">
-              <Card title="💫 Potentiel commercial" value={`${montantPotentiel.toFixed(0)} €`} />
-              <Card title="✅ Chiffre signé" value={`${chiffreSigne.toFixed(0)} €`} />
-              <Card title="🧾 Facturé HT" value={`${chiffreFacture.toFixed(0)} €`} />
-              <Card title="💰 Encaissé HT" value={`${chiffrePaye.toFixed(0)} €`} />
+              <Card title="Potentiel à signer" value={`${montantPotentiel.toFixed(0)} €`} />
+              <Card title="Montant accepté" value={`${chiffreSigne.toFixed(0)} €`} />
+              <Card title="Facturé HT" value={`${chiffreFacture.toFixed(0)} €`} />
+              <Card title="Encaissé HT" value={`${chiffrePaye.toFixed(0)} €`} />
             </section>
 
             <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
               <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
                 <div>
-                  <h2 className="text-2xl font-bold">📊 Pipeline commercial</h2>
+                  <h2 className="text-2xl font-bold">Pipeline commercial</h2>
                   <p className="mt-2 text-slate-400">
-                    Vue Kanban : l'objectif est de voir immédiatement où l'argent bloque.
+                    Les devis sont regroupés par étape pour identifier rapidement
+                    les propositions à suivre.
                   </p>
                 </div>
 
-                <div className="rounded-xl border border-violet-500 bg-violet-500/10 px-4 py-3 text-sm text-violet-200">
+                <div className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-200">
                   Prochaine action : {prochaineAction}
                 </div>
               </div>
 
               <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-5">
                 <PipelineColumn
-                  title="🌑 Brouillon"
+                  title="Brouillons"
                   devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "Brouillon")}
                   totalHT={totalHT}
                   portKey="portHT"
                 />
                 <PipelineColumn
-                  title="🛰 Envoyé"
+                  title="Envoyés"
                   devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "Envoyé")}
                   totalHT={totalHT}
                   portKey="portHT"
                 />
                 <PipelineColumn
-                  title="⚠️ À relancer"
+                  title="À relancer"
                   devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "À relancer")}
                   totalHT={totalHT}
                   portKey="portHT"
                 />
                 <PipelineColumn
-                  title="⭐ Accepté"
+                  title="Acceptés"
                   devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "Accepté")}
                   totalHT={totalHT}
                   portKey="portHT"
@@ -1236,17 +1414,17 @@ export default function Dashboard({
             </section>
 
             <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
-              <h2 className="text-2xl font-bold">📈 Statistiques avancées</h2>
+              <h2 className="text-2xl font-bold">Indicateurs de conversion</h2>
               <p className="mt-2 text-slate-400">
-                Indicateurs simples pour comprendre la performance commerciale.
+                Quelques repères pour comprendre la performance des devis envoyés.
               </p>
 
               <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
-                <Insight title="📈 Taux conversion" value={`${tauxAcceptation} %`} />
-                <Insight title="💰 Devis moyen" value={`${montantMoyenDevis.toFixed(0)} €`} />
-                <Insight title="🧾 Facture moyenne" value={`${montantMoyenFacture.toFixed(0)} €`} />
-                <Insight title="🏆 Top client" value={meilleurClient ? `${meilleurClient[0]}` : "-"} />
-                <Insight title="⚠️ À relancer" value={`${argentARelancer.toFixed(0)} €`} />
+                <Insight title="Taux d'acceptation" value={`${tauxAcceptation} %`} />
+                <Insight title="Devis moyen" value={`${montantMoyenDevis.toFixed(0)} €`} />
+                <Insight title="Facture moyenne" value={`${montantMoyenFacture.toFixed(0)} €`} />
+                <Insight title="Meilleur client" value={meilleurClient ? `${meilleurClient[0]}` : "-"} />
+                <Insight title="Montant à relancer" value={`${argentARelancer.toFixed(0)} €`} />
               </div>
             </section>
           </>
@@ -1416,6 +1594,50 @@ export default function Dashboard({
           </section>
         )}
 
+        {onglet === "tarifs" && (
+          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
+            <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                  Offre commerciale
+                </p>
+                <h2 className="mt-2 text-2xl font-bold">Tarifs recommandés</h2>
+                <p className="mt-2 max-w-2xl text-slate-400">
+                  Deux offres simples pour vendre DevisFlow à des TPE/PME de services.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-8 grid grid-cols-1 gap-5 md:grid-cols-2">
+              <PricingCard
+                name="Essentiel"
+                price="19€"
+                description="Pour créer, envoyer et faire accepter ses devis plus vite."
+                features={[
+                  "Devis et factures illimités",
+                  "Lien client sécurisé",
+                  "Acceptation ou refus en ligne",
+                  "Paiement facture Stripe",
+                  "Relance manuelle par email",
+                ]}
+              />
+              <PricingCard
+                name="Pro"
+                price="29€"
+                description="Pour accélérer l'accord client et encaisser un acompte."
+                highlighted
+                features={[
+                  "Tout Essentiel",
+                  "Acompte Stripe sur devis accepté",
+                  "Page devis premium",
+                  "Suivi du pipeline commercial",
+                  "Préparation aux relances automatiques",
+                ]}
+              />
+            </div>
+          </section>
+        )}
+
         {onglet === "devis" && (
           <>
             <section className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -1426,22 +1648,22 @@ export default function Dashboard({
             </section>
 
             <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
-              <h2 className="text-2xl font-bold">🧠 Analyse intelligente</h2>
+              <h2 className="text-2xl font-bold">Performance des devis</h2>
               <p className="mt-2 text-slate-400">
-                Cette zone aide le patron à savoir quoi faire maintenant.
+                Les montants clés pour prioriser les suivis commerciaux.
               </p>
 
               <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-5">
-                <Insight title="✅ Chiffre signé" value={`${chiffreSigne.toFixed(0)} €`} />
-                <Insight title="⚠️ Argent à relancer" value={`${argentARelancer.toFixed(0)} €`} />
-                <Insight title="📈 Taux d’acceptation" value={`${tauxAcceptation} %`} />
-                <Insight title="💰 Plus gros devis" value={plusGrosDevis ? `${totalHT(plusGrosDevis.lignes, plusGrosDevis.portHT).toFixed(0)} €` : "-"} />
-                <Insight title="🏆 Meilleur client" value={meilleurClient ? `${meilleurClient[0]} — ${meilleurClient[1].toFixed(0)} €` : "-"} />
+                <Insight title="Montant accepté" value={`${chiffreSigne.toFixed(0)} €`} />
+                <Insight title="À relancer" value={`${argentARelancer.toFixed(0)} €`} />
+                <Insight title="Taux d'acceptation" value={`${tauxAcceptation} %`} />
+                <Insight title="Plus gros devis" value={plusGrosDevis ? `${totalHT(plusGrosDevis.lignes, plusGrosDevis.portHT).toFixed(0)} €` : "-"} />
+                <Insight title="Meilleur client" value={meilleurClient ? `${meilleurClient[0]} — ${meilleurClient[1].toFixed(0)} €` : "-"} />
               </div>
             </section>
 
             <button onClick={() => { resetForm(); setShowForm(true); }} className="mt-8 rounded-xl bg-white px-5 py-3 font-semibold text-black">
-              + Nouveau devis
+              Nouveau devis
             </button>
 
             {showForm && (
@@ -1475,14 +1697,63 @@ export default function Dashboard({
                   <Input label="Port HT" type="number" value={String(portHT)} onChange={(v) => setPortHT(Number(v))} />
                 </div>
 
-                <div className="mt-8 rounded-2xl border border-violet-500 bg-slate-950 p-5">
-                  <h3 className="text-xl font-bold text-violet-300">✨ Génération IA</h3>
+                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                  <h3 className="text-xl font-bold">Acompte à la validation</h3>
                   <p className="mt-2 text-sm text-slate-400">
-                    Optionnel. Si le quota OpenAI est vide, utilise le catalogue produit.
+                    Optionnel. Si le client accepte le devis, il pourra payer cet acompte depuis le lien sécurisé.
+                  </p>
+
+                  <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <label className="block">
+                      <span className="text-sm text-slate-300">Type d&apos;acompte</span>
+                      <select
+                        value={acompteType}
+                        onChange={(e) => setAcompteType(e.target.value as AcompteType)}
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"
+                      >
+                        <option value="none">Aucun acompte</option>
+                        <option value="percent">Pourcentage du TTC</option>
+                        <option value="fixed">Montant fixe</option>
+                      </select>
+                    </label>
+
+                    {acompteType === "percent" && (
+                      <Input
+                        label="Pourcentage"
+                        type="number"
+                        value={String(acomptePourcentage)}
+                        onChange={(v) => setAcomptePourcentage(Number(v))}
+                      />
+                    )}
+
+                    {acompteType === "fixed" && (
+                      <Input
+                        label="Montant acompte TTC"
+                        type="number"
+                        value={String(acompteMontant)}
+                        onChange={(v) => setAcompteMontant(Number(v))}
+                      />
+                    )}
+
+                    {acompteType !== "none" && (
+                      <div className="rounded-xl border border-slate-700 bg-slate-900 p-4">
+                        <p className="text-sm text-slate-400">Acompte estimé</p>
+                        <p className="mt-1 text-xl font-bold">
+                          {montantAcomptePreview.toFixed(2)} € TTC
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="mt-8 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                  <h3 className="text-xl font-bold text-slate-100">Assistant de rédaction</h3>
+                  <p className="mt-2 text-sm text-slate-400">
+                    Optionnel. Utilise-le seulement pour préparer une première version du devis.
                   </p>
                   <textarea value={promptIA} onChange={(e) => setPromptIA(e.target.value)} placeholder="Exemple : 500 flyers A5 recto verso papier couché 135g" rows={4} className="mt-4 w-full rounded-xl border border-slate-700 bg-slate-900 p-4 text-white outline-none focus:border-violet-400" />
-                  <button onClick={genererAvecIA} disabled={loadingIA} className="mt-4 rounded-xl bg-violet-600 px-5 py-3 font-semibold text-white disabled:opacity-50">
-                    {loadingIA ? "Génération..." : "✨ Générer avec IA"}
+                  <button onClick={genererAvecIA} disabled={loadingIA} className="mt-4 rounded-xl bg-white px-5 py-3 font-semibold text-slate-950 disabled:opacity-50">
+                    {loadingIA ? "Génération..." : "Générer une proposition"}
                   </button>
                 </div>
 
@@ -1518,7 +1789,7 @@ export default function Dashboard({
                 </div>
 
                 <button onClick={() => setLignes([...lignes, { reference: "", designation: "", quantite: 1, prixUnitaire: 0 }])} className="mt-4 rounded-xl border border-slate-700 px-4 py-2">
-                  + Ajouter une ligne
+                  Ajouter une ligne
                 </button>
 
                 <div className="mt-6 rounded-xl bg-slate-800 p-5">
@@ -1552,6 +1823,9 @@ export default function Dashboard({
 
             <section className="mt-8 rounded-2xl bg-slate-900 p-6 shadow">
               <h2 className="text-xl font-bold">Devis récents</h2>
+              <p className="mt-2 text-slate-400">
+                Priorisez l&apos;envoi, la relance et le suivi client depuis cette liste.
+              </p>
 
               <DataTable>
                 <thead>
@@ -1579,7 +1853,7 @@ export default function Dashboard({
                         )}
 
                         <button onClick={() => envoyerParEmail(d)} disabled={sendingId === d.id} className="rounded-lg border border-blue-500 px-3 py-2 text-blue-300 disabled:opacity-50">
-                          {sendingId === d.id ? "Envoi..." : "Email"}
+                          {sendingId === d.id ? "Envoi..." : "Envoyer"}
                         </button>
 
                         <button onClick={() => relancerParEmail(d)} disabled={relanceSendingId === d.id} className="rounded-lg border border-yellow-500 px-3 py-2 text-yellow-300 disabled:opacity-50">
@@ -1587,7 +1861,7 @@ export default function Dashboard({
                         </button>
 
                         <button onClick={() => copierLienClient(d)} className="rounded-lg border border-violet-500 px-3 py-2 text-violet-300">
-                          Copier lien client
+                          Copier lien
                         </button>
 
                         <button onClick={() => transformerEnFacture(d)} className="rounded-lg border border-green-500 px-3 py-2 text-green-300">
@@ -1666,11 +1940,77 @@ function ActionCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-left shadow transition hover:-translate-y-1 hover:border-violet-500 hover:bg-slate-800"
+      className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-left shadow transition hover:border-slate-500 hover:bg-slate-800"
     >
       <p className="text-xl font-bold text-white">{title}</p>
       <p className="mt-2 text-sm text-slate-400">{description}</p>
     </button>
+  );
+}
+
+function PricingCard({
+  name,
+  price,
+  description,
+  features,
+  highlighted = false,
+}: {
+  name: string;
+  price: string;
+  description: string;
+  features: string[];
+  highlighted?: boolean;
+}) {
+  return (
+    <article
+      className={`rounded-2xl border p-6 ${
+        highlighted
+          ? "border-white bg-white text-slate-950"
+          : "border-slate-800 bg-slate-950 text-white"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-2xl font-bold">{name}</h3>
+          <p
+            className={`mt-2 text-sm ${
+              highlighted ? "text-slate-600" : "text-slate-400"
+            }`}
+          >
+            {description}
+          </p>
+        </div>
+        {highlighted && (
+          <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold text-white">
+            Recommandé
+          </span>
+        )}
+      </div>
+
+      <p className="mt-6 text-4xl font-black">
+        {price}
+        <span
+          className={`text-base font-medium ${
+            highlighted ? "text-slate-500" : "text-slate-400"
+          }`}
+        >
+          /mois HT
+        </span>
+      </p>
+
+      <ul className="mt-6 space-y-3 text-sm">
+        {features.map((feature) => (
+          <li key={feature} className="flex gap-3">
+            <span
+              className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${
+                highlighted ? "bg-slate-950" : "bg-slate-400"
+              }`}
+            />
+            <span>{feature}</span>
+          </li>
+        ))}
+      </ul>
+    </article>
   );
 }
 
@@ -1680,8 +2020,8 @@ function PipelineColumn({
   totalHT,
 }: {
   title: string;
-  devis: any[];
-  totalHT: (lignes: any[], port?: number) => number;
+  devis: DevisAvecStatutAuto[];
+  totalHT: (lignes: LigneDevis[], port?: number) => number;
   portKey?: string;
 }) {
   const total = devis.reduce((sum, d) => sum + totalHT(d.lignes, d.portHT), 0);
@@ -1708,7 +2048,7 @@ function PipelineColumn({
           <div key={d.id || d.numero} className="rounded-xl border border-slate-800 bg-slate-900 p-4">
             <p className="font-semibold">{d.numero}</p>
             <p className="mt-1 text-sm text-slate-400">{d.client || "Client inconnu"}</p>
-            <p className="mt-2 text-sm font-bold text-violet-300">
+            <p className="mt-2 text-sm font-bold text-white">
               {totalHT(d.lignes, d.portHT).toFixed(2)} €
             </p>
           </div>
@@ -1718,13 +2058,13 @@ function PipelineColumn({
   );
 }
 
-function FacturesPipelineColumn({ factures }: { factures: any[] }) {
+function FacturesPipelineColumn({ factures }: { factures: Facture[] }) {
   const total = factures.reduce((sum, f) => sum + Number(f.totalHT || 0), 0);
 
   return (
     <div className="min-h-[280px] rounded-2xl border border-slate-800 bg-slate-950 p-4">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="font-bold">💰 Facturé</h3>
+        <h3 className="font-bold">Facturé</h3>
         <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
           {factures.length}
         </span>
