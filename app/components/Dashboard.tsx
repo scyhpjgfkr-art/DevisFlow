@@ -6,6 +6,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { supabase } from "@/lib/supabase";
 import ParametresEntreprise from "./ParametresEntreprise";
+import OnboardingPremiersPas from "./OnboardingPremiersPas";
 
 type Statut = "Brouillon" | "Envoyé" | "À relancer" | "Accepté" | "Refusé";
 
@@ -1087,6 +1088,10 @@ export default function Dashboard({
       : devisEnvoyes.length > 0
       ? "Suivre les devis envoyés"
       : "Créer un nouveau devis";
+      const entrepriseOk =
+  Boolean(settings.nom?.trim()) &&
+  Boolean(settings.email?.trim()) &&
+  Boolean(settings.siret?.trim());
 
   return (
     <main className="min-h-screen bg-slate-950 p-8 text-white">
@@ -1139,7 +1144,20 @@ export default function Dashboard({
 
 
         {onglet === "dashboard" && (
-          <>
+          <><OnboardingPremiersPas
+  entrepriseOk={entrepriseOk}
+  clientsCount={clients.length}
+  produitsCount={produits.length}
+  devisCount={devis.length}
+  onGoParametres={() => setOnglet("parametres")}
+  onGoClients={() => setOnglet("clients")}
+  onGoCatalogue={() => setOnglet("catalogue")}
+  onGoDevis={() => {
+    resetForm();
+    setShowForm(true);
+    setOnglet("devis");
+  }}
+/>
             <section className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-4">
               <ActionCard
                 title="+ Nouveau devis"
