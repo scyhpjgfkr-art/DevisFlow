@@ -42,6 +42,9 @@ type DevisPublic = {
   entreprise_email: string | null;
   entreprise_siret: string | null;
   entreprise_tva: string | null;
+  entreprise_logo_url: string | null;
+  entreprise_site_web: string | null;
+  entreprise_couleur_principale: string | null;
   lignes_devis: LigneDevisPublic[] | null;
 };
 
@@ -117,6 +120,17 @@ function initials(value?: string | null) {
     .map((word) => word[0])
     .join("")
     .toUpperCase();
+}
+
+function normalizeBrandColor(value?: string | null) {
+  return /^#[0-9a-fA-F]{6}$/.test(value || "") ? value || "#0f172a" : "#0f172a";
+}
+
+function normalizeWebsite(value?: string | null) {
+  const url = value?.trim();
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `https://${url}`;
 }
 
 function defaultConditions(echeance?: string | null) {
@@ -305,6 +319,8 @@ export default function DevisPublicPage() {
   const acompteLabel = acompteConfigure
     ? `${formatCurrency(acompteMontant)} à régler en acompte`
     : null;
+  const brandColor = normalizeBrandColor(devis?.entreprise_couleur_principale);
+  const entrepriseSiteWeb = normalizeWebsite(devis?.entreprise_site_web);
 
   return (
     <main className="min-h-screen bg-[#f6f7f9] px-4 py-6 text-slate-950 md:px-8">
@@ -328,23 +344,45 @@ export default function DevisPublicPage() {
           <div className="space-y-6">
             <header className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
-                <div className="flex items-start gap-4">
-                  <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-lg bg-slate-950 text-lg font-black text-white">
-                    {initials(entrepriseNom)}
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-slate-500">
-                      {entrepriseNom}
-                    </p>
+	                <div className="flex items-start gap-4">
+	                  <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-lg font-black text-white">
+	                    {devis.entreprise_logo_url ? (
+	                      // eslint-disable-next-line @next/next/no-img-element
+	                      <img
+	                        src={devis.entreprise_logo_url}
+	                        alt={entrepriseNom}
+	                        className="h-full w-full object-contain p-2"
+	                      />
+	                    ) : (
+	                      <span
+	                        className="flex h-full w-full items-center justify-center"
+	                        style={{ backgroundColor: brandColor }}
+	                      >
+	                        {initials(entrepriseNom)}
+	                      </span>
+	                    )}
+	                  </div>
+	                  <div>
+	                    <p className="text-sm font-semibold text-slate-500">
+	                      {entrepriseNom}
+	                    </p>
                     <h1 className="mt-1 text-3xl font-black text-slate-950 md:text-4xl">
                       Devis {devis.numero || ""}
                     </h1>
-                    <p className="mt-2 max-w-2xl text-slate-600">
-                      Merci de vérifier les informations ci-dessous avant de
-                      transmettre votre réponse.
-                    </p>
-                  </div>
-                </div>
+	                    <p className="mt-2 max-w-2xl text-slate-600">
+	                      Merci de vérifier les informations ci-dessous avant de
+	                      transmettre votre réponse.
+	                    </p>
+	                    {entrepriseSiteWeb && (
+	                      <a
+	                        href={entrepriseSiteWeb}
+	                        className="mt-2 inline-block text-sm font-medium text-slate-500 hover:text-slate-950"
+	                      >
+	                        {entrepriseSiteWeb.replace(/^https?:\/\//, "")}
+	                      </a>
+	                    )}
+	                  </div>
+	                </div>
 
                 <div className="flex flex-col items-start gap-3 md:items-end">
                   <span
@@ -372,7 +410,14 @@ export default function DevisPublicPage() {
                         {devis.entreprise_adresse && <p>{devis.entreprise_adresse}</p>}
                         {devis.entreprise_ville && <p>{devis.entreprise_ville}</p>}
                         {devis.entreprise_email && <p>{devis.entreprise_email}</p>}
-                        {devis.entreprise_telephone && <p>{devis.entreprise_telephone}</p>}
+	                        {devis.entreprise_telephone && <p>{devis.entreprise_telephone}</p>}
+	                        {entrepriseSiteWeb && (
+	                          <p>
+	                            <a href={entrepriseSiteWeb} className="hover:text-slate-950">
+	                              {entrepriseSiteWeb.replace(/^https?:\/\//, "")}
+	                            </a>
+	                          </p>
+	                        )}
                         {devis.entreprise_siret && <p>SIRET : {devis.entreprise_siret}</p>}
                         {devis.entreprise_tva && <p>TVA : {devis.entreprise_tva}</p>}
                       </div>

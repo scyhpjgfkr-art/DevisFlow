@@ -1,23 +1,43 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
-import { escapeHtml, getErrorMessage } from "@/lib/server-utils";
+import { buildPremiumDocumentEmail } from "@/lib/email-templates";
+import { getErrorMessage } from "@/lib/server-utils";
 
 type DevisRelance = {
   id: string;
+  user_id: string;
   numero: string | null;
   client: string | null;
   email: string;
   public_token: string | null;
+  port_ht: number | null;
   derniere_relance: string | null;
   date_envoi: string | null;
   date_creation: string | null;
+  lignes_devis?: Array<{
+    quantite: number | null;
+    prix_unitaire: number | null;
+  }> | null;
 };
 
 type RelanceResult = {
   devis: string | null;
   success: boolean;
   error?: unknown;
+};
+
+type EntrepriseSettings = {
+  nom?: string | null;
+  adresse?: string | null;
+  ville?: string | null;
+  telephone?: string | null;
+  email?: string | null;
+  siret?: string | null;
+  tva?: string | null;
+  logo_url?: string | null;
+  site_web?: string | null;
+  couleur_principale?: string | null;
 };
 
 export async function GET(request: Request) {
@@ -56,7 +76,7 @@ export async function GET(request: Request) {
 
     const { data: devis, error } = await supabaseAdmin
       .from("devis")
-      .select("*")
+      .select("*, lignes_devis(quantite, prix_unitaire)")
       .in("statut", ["Envoyé", "À relancer"])
       .not("email", "is", null)
       .or(
@@ -84,41 +104,50 @@ export async function GET(request: Request) {
       const acceptUrl = d.public_token
         ? `${process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/devis/${d.public_token}`
         : "";
+      const totalHT =
+        (d.lignes_devis || []).reduce(
+          (sum, ligne) =>
+            sum + Number(ligne.quantite || 0) * Number(ligne.prix_unitaire || 0),
+          0
+        ) + Number(d.port_ht || 0);
+      const totalTTC = totalHT * 1.2;
+      const { data: entreprise } = await supabaseAdmin
+        .from("entreprise_settings")
+        .select(
+          "nom, adresse, ville, telephone, email, siret, tva, logo_url, site_web, couleur_principale"
+        )
+        .eq("user_id", d.user_id)
+        .maybeSingle<EntrepriseSettings>();
 
       const { error: emailError } = await resend.emails.send({
         from: fromEmail,
         to: d.email,
         subject: `Relance concernant votre devis ${d.numero || ""}`,
-        html: `
-          <div style="margin:0;background:#f8fafc;padding:32px 0;font-family:Arial,sans-serif;color:#0f172a;line-height:1.6;">
-            <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px;overflow:hidden;">
-              <div style="background:#0f172a;color:#ffffff;padding:26px 32px;">
-                <p style="margin:0;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#cbd5e1;">Suivi de devis</p>
-                <h1 style="margin:10px 0 0;font-size:24px;">Devis ${escapeHtml(d.numero || "")}</h1>
-              </div>
-
-              <div style="padding:28px 32px;">
-                <p style="margin:0 0 14px;">Bonjour ${escapeHtml(d.client || "")},</p>
-                <p style="margin:0 0 20px;">
-                  Nous revenons vers vous concernant ce devis. Vous pouvez le
-                  consulter, l'accepter ou répondre à cet email si vous avez une question.
-                </p>
-
-                ${
-                  acceptUrl
-                    ? `<p style="margin:28px 0 0;">
-                        <a href="${escapeHtml(acceptUrl)}" style="display:inline-block;background:#0f172a;color:#fff;padding:14px 22px;border-radius:10px;text-decoration:none;font-weight:bold;">
-                          Consulter et répondre au devis
-                        </a>
-                      </p>`
-                    : ""
-                }
-
-                <p style="margin:28px 0 0;">Bien cordialement,<br/><strong>L'équipe</strong></p>
-              </div>
-            </div>
-          </div>
-        `,
+        html: buildPremiumDocumentEmail({
+          brand: {
+            nom: entreprise?.nom || undefined,
+            adresse: entreprise?.adresse || undefined,
+            ville: entreprise?.ville || undefined,
+            telephone: entreprise?.telephone || undefined,
+            email: entreprise?.email || undefined,
+            siret: entreprise?.siret || undefined,
+            tva: entreprise?.tva || undefined,
+            logo_url: entreprise?.logo_url || undefined,
+            site_web: entreprise?.site_web || undefined,
+            couleur_principale: entreprise?.couleur_principale || undefined,
+          },
+          eyebrow: "Suivi de devis",
+          title: `Devis ${d.numero || ""}`,
+          numero: d.numero || undefined,
+          client: d.client || undefined,
+          intro:
+            "Nous revenons vers vous concernant ce devis. Vous pouvez le consulter, l'accepter ou répondre à cet email si vous avez une question.",
+          totalHT: totalHT.toFixed(2),
+          totalTTC: totalTTC.toFixed(2),
+          ctaLabel: acceptUrl ? "Consulter et répondre au devis" : undefined,
+          ctaUrl: acceptUrl,
+          note: "Ce rappel est automatique et sécurisé.",
+        }),
       });
 
       if (emailError) {

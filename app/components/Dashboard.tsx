@@ -37,6 +37,9 @@ type Devis = {
   acompteMontant?: number;
   acomptePourcentage?: number;
   acompteStatut?: string;
+  signataireNom?: string;
+  dateAcceptation?: string;
+  responseLockedAt?: string;
 };
 
 type Settings = {
@@ -47,6 +50,9 @@ type Settings = {
   email: string;
   siret: string;
   tva: string;
+  logoUrl: string;
+  siteWeb: string;
+  couleurPrincipale: string;
 };
 
 type Client = {
@@ -129,6 +135,11 @@ type FactureRow = {
   lignes_factures?: LigneFactureRow[] | null;
 };
 
+type SendFactureResponse = {
+  success?: boolean;
+  error?: string;
+};
+
 type LigneDevisRow = {
   reference?: string | null;
   designation?: string | null;
@@ -154,6 +165,9 @@ type DevisRow = {
   acompte_montant?: number | null;
   acompte_pourcentage?: number | null;
   acompte_statut?: string | null;
+  signataire_nom?: string | null;
+  date_acceptation?: string | null;
+  response_locked_at?: string | null;
   lignes_devis?: LigneDevisRow[] | null;
 };
 
@@ -176,6 +190,100 @@ type AutoTableDoc = jsPDF & {
     finalY: number;
   };
 };
+
+const DEFAULT_BRAND_COLOR = "#0f172a";
+
+function normalizeBrandColor(value?: string) {
+  return /^#[0-9a-fA-F]{6}$/.test(value || "")
+    ? value || DEFAULT_BRAND_COLOR
+    : DEFAULT_BRAND_COLOR;
+}
+
+function hexToRgb(value?: string): [number, number, number] {
+  const color = normalizeBrandColor(value).replace("#", "");
+  return [
+    parseInt(color.slice(0, 2), 16),
+    parseInt(color.slice(2, 4), 16),
+    parseInt(color.slice(4, 6), 16),
+  ];
+}
+
+function initials(value?: string) {
+  const source = value?.trim() || "DF";
+  return source
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((word) => word[0])
+    .join("")
+    .toUpperCase();
+}
+
+function normalizeWebsite(value?: string) {
+  const url = value?.trim();
+  if (!url) return "";
+  if (url.startsWith("http://") || url.startsWith("https://")) return url;
+  return `https://${url}`;
+}
+
+function displayWebsite(value?: string) {
+  return normalizeWebsite(value).replace(/^https?:\/\//, "");
+}
+
+async function logoToPngDataUrl(url?: string) {
+  if (!url) return null;
+
+  try {
+    const response = await fetch(url);
+    const blob = await response.blob();
+    const bitmap = await createImageBitmap(blob);
+    const maxSize = 320;
+    const scale = Math.min(maxSize / bitmap.width, maxSize / bitmap.height, 1);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  } catch (error) {
+    console.warn("Logo PDF indisponible", error);
+    return null;
+  }
+}
+
+function drawPdfBrandMark(
+  doc: jsPDF,
+  settings: Settings,
+  x: number,
+  y: number,
+  size: number,
+  logoDataUrl: string | null
+) {
+  const [r, g, b] = hexToRgb(settings.couleurPrincipale);
+
+  if (logoDataUrl) {
+    try {
+      doc.addImage(logoDataUrl, "PNG", x, y, size, size);
+      return;
+    } catch (error) {
+      console.warn("Logo PDF ignore", error);
+    }
+  }
+
+  doc.setFillColor(r, g, b);
+  doc.roundedRect(x, y, size, size, 2, 2, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text(initials(settings.nom), x + size / 2, y + size / 2 + 3, {
+    align: "center",
+  });
+}
+
+function formatEuro(value: number) {
+  return `${value.toFixed(2)} €`;
+}
 
 export default function Dashboard({
   session,
@@ -204,6 +312,8 @@ export default function Dashboard({
   const [editingDevis, setEditingDevis] = useState<Devis | null>(null);
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [relanceSendingId, setRelanceSendingId] = useState<string | null>(null);
+  const [factureSendingId, setFactureSendingId] = useState<string | null>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
 
   const [settings, setSettings] = useState<Settings>({
     nom: "DevisFlow",
@@ -213,6 +323,9 @@ export default function Dashboard({
     email: "contact@devisflow.fr",
     siret: "123 456 789 00012",
     tva: "FR12 123456789",
+    logoUrl: "",
+    siteWeb: "",
+    couleurPrincipale: DEFAULT_BRAND_COLOR,
   });
 
   const [client, setClient] = useState("");
@@ -264,6 +377,9 @@ export default function Dashboard({
         email: data.email || "",
         siret: data.siret || "",
         tva: data.tva || "",
+        logoUrl: data.logo_url || "",
+        siteWeb: data.site_web || "",
+        couleurPrincipale: data.couleur_principale || DEFAULT_BRAND_COLOR,
       });
     }
   }, [session.user.id]);
@@ -282,10 +398,19 @@ export default function Dashboard({
     void chargerDonnees();
   }, [chargerSettings]);
 
-  async function sauvegarderSettings() {
+  async function sauvegarderSettings(nextSettings = settings) {
     const { error } = await supabase.from("entreprise_settings").upsert({
       user_id: session.user.id,
-      ...settings,
+      nom: nextSettings.nom,
+      adresse: nextSettings.adresse,
+      ville: nextSettings.ville,
+      telephone: nextSettings.telephone,
+      email: nextSettings.email,
+      siret: nextSettings.siret,
+      tva: nextSettings.tva,
+      logo_url: nextSettings.logoUrl,
+      site_web: nextSettings.siteWeb,
+      couleur_principale: normalizeBrandColor(nextSettings.couleurPrincipale),
     });
 
     if (error) {
@@ -295,6 +420,53 @@ export default function Dashboard({
     }
 
     alert("Paramètres sauvegardés.");
+  }
+
+  async function uploadLogo(file: File) {
+    if (!file.type.startsWith("image/")) {
+      alert("Le fichier choisi doit être une image.");
+      return;
+    }
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert("Le logo doit faire moins de 2 Mo.");
+      return;
+    }
+
+    setLogoUploading(true);
+
+    const extension = file.name.split(".").pop()?.toLowerCase() || "png";
+    const safeExtension = ["png", "jpg", "jpeg", "webp"].includes(extension)
+      ? extension
+      : "png";
+    const path = `${session.user.id}/logo-${Date.now()}.${safeExtension}`;
+
+    const { error } = await supabase.storage
+      .from("entreprise-logos")
+      .upload(path, file, {
+        cacheControl: "3600",
+        upsert: true,
+      });
+
+    if (error) {
+      console.error(error);
+      alert("Erreur upload logo. Vérifie que le SQL Sprint 29 a été appliqué.");
+      setLogoUploading(false);
+      return;
+    }
+
+    const { data } = supabase.storage
+      .from("entreprise-logos")
+      .getPublicUrl(path);
+
+    const nextSettings = {
+      ...settings,
+      logoUrl: data.publicUrl,
+    };
+
+    setSettings(nextSettings);
+    await sauvegarderSettings(nextSettings);
+    setLogoUploading(false);
   }
 
   async function chargerClients() {
@@ -535,44 +707,63 @@ export default function Dashboard({
     await chargerFactures();
   }
 
-  function telechargerFacturePDF(f: Facture) {
+  async function telechargerFacturePDF(f: Facture) {
     const doc = new jsPDF();
+    const logoDataUrl = await logoToPngDataUrl(settings.logoUrl);
+    const [r, g, b] = hexToRgb(settings.couleurPrincipale);
+    const totalTVAValue = f.totalTTC - f.totalHT;
 
-    doc.setFillColor(8, 14, 28);
-    doc.rect(0, 0, 210, 34, "F");
+    doc.setFillColor(248, 250, 252);
+    doc.rect(0, 0, 210, 297, "F");
+
+    doc.setFillColor(r, g, b);
+    doc.rect(0, 0, 210, 40, "F");
+
+    drawPdfBrandMark(doc, settings, 14, 10, 18, logoDataUrl);
 
     doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text(settings.nom || "Entreprise", 38, 18);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.text(displayWebsite(settings.siteWeb) || settings.email || "", 38, 25);
+
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(22);
-    doc.text("FACTURE", 14, 21);
+    doc.text("FACTURE", 196, 18, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.text(f.numero, 196, 26, { align: "right" });
+    doc.text(new Date(f.dateCreation).toLocaleDateString("fr-FR"), 196, 33, {
+      align: "right",
+    });
 
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(14, 52, 84, 42, 3, 3, "F");
+    doc.roundedRect(112, 52, 84, 42, 3, 3, "F");
+
+    doc.setTextColor(15, 23, 42);
+    doc.setFont("helvetica", "bold");
     doc.setFontSize(10);
-    doc.text(f.numero, 150, 15);
-    doc.text(new Date(f.dateCreation).toLocaleDateString("fr-FR"), 150, 23);
+    doc.text("Émetteur", 20, 63);
+    doc.text("Client", 118, 63);
 
-    doc.setTextColor(0, 0, 0);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(settings.adresse || "-", 20, 71);
+    doc.text(settings.ville || "-", 20, 77);
+    doc.text(`Tél : ${settings.telephone || "-"}`, 20, 83);
+    doc.text(`Email : ${settings.email || "-"}`, 20, 89);
 
-    doc.setFontSize(14);
-    doc.text(settings.nom || "Entreprise", 14, 49);
-
-    doc.setFontSize(10);
-    doc.text(settings.adresse || "-", 14, 57);
-    doc.text(settings.ville || "-", 14, 64);
-    doc.text(`Tél : ${settings.telephone || "-"}`, 14, 71);
-    doc.text(`Email : ${settings.email || "-"}`, 14, 78);
-    doc.text(`SIRET : ${settings.siret || "-"}`, 14, 85);
-    doc.text(`TVA : ${settings.tva || "-"}`, 14, 92);
-
-    doc.setFontSize(14);
-    doc.text("Client", 120, 49);
-
-    doc.setFontSize(10);
-    doc.text(f.client || "-", 120, 57);
-    doc.text(f.societe || "-", 120, 64);
-    doc.text(f.email || "-", 120, 71);
-    doc.text(f.telephone || "-", 120, 78);
+    doc.text(f.client || "-", 118, 71);
+    doc.text(f.societe || "-", 118, 77);
+    doc.text(f.email || "-", 118, 83);
+    doc.text(f.telephone || "-", 118, 89);
 
     autoTable(doc, {
-      startY: 110,
+      startY: 108,
       head: [["Référence", "Désignation", "Qté", "PU HT", "Montant HT"]],
       body:
         f.lignes && f.lignes.length > 0
@@ -580,31 +771,58 @@ export default function Dashboard({
               l.reference || "-",
               l.designation || "-",
               l.quantite,
-              `${l.prixUnitaire.toFixed(2)} €`,
-              `${(l.quantite * l.prixUnitaire).toFixed(2)} €`,
+              formatEuro(l.prixUnitaire),
+              formatEuro(l.quantite * l.prixUnitaire),
             ])
-          : [["-", "Facture sans détail de ligne", "-", "-", `${f.totalHT.toFixed(2)} €`]],
+          : [["-", "Facture sans détail de ligne", "-", "-", formatEuro(f.totalHT)]],
       styles: {
         fontSize: 9,
-        cellPadding: 3,
+        cellPadding: 3.5,
+        lineColor: [226, 232, 240],
+        lineWidth: 0.1,
       },
       headStyles: {
-        fillColor: [8, 14, 28],
+        fillColor: [r, g, b],
+        textColor: [255, 255, 255],
+        fontStyle: "bold",
+      },
+      alternateRowStyles: {
+        fillColor: [248, 250, 252],
       },
     });
 
-    const finalY = ((doc as AutoTableDoc).lastAutoTable?.finalY ?? 110) + 10;
+    const finalY = ((doc as AutoTableDoc).lastAutoTable?.finalY ?? 108) + 10;
+    const totalBoxY = Math.min(finalY, 198);
 
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(112, totalBoxY, 84, 48, 3, 3, "F");
+
+    doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    doc.text(`Total HT : ${f.totalHT.toFixed(2)} €`, 135, finalY);
-    doc.text(`TVA 20% : ${(f.totalTTC - f.totalHT).toFixed(2)} €`, 135, finalY + 8);
+    doc.setTextColor(71, 85, 105);
+    doc.text("Total HT", 120, totalBoxY + 12);
+    doc.text(formatEuro(f.totalHT), 188, totalBoxY + 12, { align: "right" });
+    doc.text("TVA 20%", 120, totalBoxY + 22);
+    doc.text(formatEuro(totalTVAValue), 188, totalBoxY + 22, { align: "right" });
 
-    doc.setFontSize(15);
-    doc.text(`Total TTC : ${f.totalTTC.toFixed(2)} €`, 135, finalY + 22);
+    doc.setFillColor(r, g, b);
+    doc.roundedRect(112, totalBoxY + 30, 84, 18, 2, 2, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.text("Total TTC", 120, totalBoxY + 42);
+    doc.text(formatEuro(f.totalTTC), 188, totalBoxY + 42, { align: "right" });
 
+    doc.setTextColor(15, 23, 42);
     doc.setFontSize(10);
-    doc.text(`Statut : ${f.statut}`, 14, finalY + 28);
-    doc.text("Merci pour votre confiance.", 14, 275);
+    doc.text("Conditions", 14, 232);
+
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(71, 85, 105);
+    doc.setFontSize(10);
+    doc.text(`Statut : ${f.statut}`, 14, 241);
+    doc.text("Règlement selon les conditions convenues entre les parties.", 14, 249);
+    doc.text(`SIRET : ${settings.siret || "-"} · TVA : ${settings.tva || "-"}`, 14, 257);
+    doc.text("Merci pour votre confiance.", 14, 278);
 
     doc.save(`${f.numero}.pdf`);
   }
@@ -640,6 +858,9 @@ export default function Dashboard({
         acompteMontant: Number(d.acompte_montant || 0),
         acomptePourcentage: Number(d.acompte_pourcentage || 0),
         acompteStatut: d.acompte_statut || undefined,
+        signataireNom: d.signataire_nom || undefined,
+        dateAcceptation: d.date_acceptation || undefined,
+        responseLockedAt: d.response_locked_at || undefined,
         lignes: (d.lignes_devis || []).map((l) => ({
           reference: l.reference || "",
           designation: l.designation || "",
@@ -660,6 +881,20 @@ export default function Dashboard({
 
   function totalTTC(lignes: LigneDevis[], port = 0) {
     return totalHT(lignes, port) + totalTVA(lignes, port);
+  }
+
+  function montantAcompte(d: Devis) {
+    const total = totalTTC(d.lignes, d.portHT);
+
+    if (d.acompteType === "percent") {
+      return total * (Number(d.acomptePourcentage || 0) / 100);
+    }
+
+    if (d.acompteType === "fixed") {
+      return Number(d.acompteMontant || 0);
+    }
+
+    return 0;
   }
 
   function getClientLink(d: Devis) {
@@ -834,6 +1069,9 @@ export default function Dashboard({
       acompteMontant: acompteType === "fixed" ? acompteMontant : 0,
       acomptePourcentage: acompteType === "percent" ? acomptePourcentage : 0,
       acompteStatut: editingDevis?.acompteStatut,
+      signataireNom: editingDevis?.signataireNom,
+      dateAcceptation: editingDevis?.dateAcceptation,
+      responseLockedAt: editingDevis?.responseLockedAt,
     });
   }
 
@@ -992,6 +1230,7 @@ export default function Dashboard({
         totalHT: totalHT(d.lignes, d.portHT).toFixed(2),
         totalTTC: totalTTC(d.lignes, d.portHT).toFixed(2),
         entreprise: settings,
+        acceptUrl: getClientLink(d),
       }),
     });
 
@@ -1038,6 +1277,8 @@ export default function Dashboard({
         entreprise: settings,
         lignes: d.lignes,
         acceptUrl: getClientLink(d),
+        acompteTTC:
+          montantAcompte(d) > 0 ? montantAcompte(d).toFixed(2) : null,
       }),
     });
 
@@ -1062,8 +1303,41 @@ export default function Dashboard({
     alert("Devis envoyé par email.");
   }
 
-  function telechargerPDF(d: Devis) {
+  async function envoyerFactureParEmail(f: Facture) {
+    if (!f.id) return;
+
+    if (!f.email) {
+      alert("Impossible d'envoyer : email client manquant.");
+      return;
+    }
+
+    setFactureSendingId(f.id);
+
+    const response = await fetch("/api/send-facture", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        factureId: f.id,
+      }),
+    });
+
+    setFactureSendingId(null);
+
+    const data = (await response.json()) as SendFactureResponse;
+
+    if (!response.ok) {
+      console.error(data);
+      alert(data?.error || "Erreur lors de l'envoi de la facture.");
+      return;
+    }
+
+    alert("Facture envoyée par email.");
+  }
+
+  async function telechargerPDF(d: Devis) {
     const doc = new jsPDF();
+    const logoDataUrl = await logoToPngDataUrl(settings.logoUrl);
+    const [r, g, b] = hexToRgb(settings.couleurPrincipale);
 
     const totalHTValue = totalHT(d.lignes, d.portHT);
     const totalTVAValue = totalTVA(d.lignes, d.portHT);
@@ -1075,61 +1349,65 @@ export default function Dashboard({
         ? Number(d.acompteMontant || 0)
         : 0;
 
-    doc.setFillColor(15, 23, 42);
-    doc.rect(0, 0, 210, 36, "F");
+    doc.setFillColor(248, 250, 252);
+    doc.rect(0, 0, 210, 297, "F");
+
+    doc.setFillColor(r, g, b);
+    doc.rect(0, 0, 210, 42, "F");
+
+    drawPdfBrandMark(doc, settings, 14, 11, 18, logoDataUrl);
 
     doc.setTextColor(255, 255, 255);
-    doc.setFontSize(22);
     doc.setFont("helvetica", "bold");
-    doc.text("Devis", 14, 22);
-
-    doc.setFontSize(9);
-    doc.setFont("helvetica", "normal");
-    doc.text(`N° ${d.numero}`, 145, 15);
-    doc.text(`Date : ${new Date(d.dateCreation).toLocaleDateString("fr-FR")}`, 145, 22);
-    doc.text(`Statut : ${d.statut}`, 145, 29);
-
-    doc.setTextColor(15, 23, 42);
     doc.setFontSize(13);
-    doc.setFont("helvetica", "bold");
-    doc.text(settings.nom || "Entreprise", 14, 51);
+    doc.text(settings.nom || "Entreprise", 38, 18);
 
-    doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
-    doc.setTextColor(71, 85, 105);
-    doc.text(settings.adresse || "-", 14, 59);
-    doc.text(settings.ville || "-", 14, 66);
-    doc.text(`Téléphone : ${settings.telephone || "-"}`, 14, 73);
-    doc.text(`Email : ${settings.email || "-"}`, 14, 80);
-    doc.text(`SIRET : ${settings.siret || "-"}`, 14, 87);
-    doc.text(`TVA : ${settings.tva || "-"}`, 14, 94);
+    doc.setFontSize(8.5);
+    doc.text(displayWebsite(settings.siteWeb) || settings.email || "", 38, 25);
 
-    doc.setDrawColor(226, 232, 240);
-    doc.roundedRect(118, 46, 78, 54, 2, 2);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(22);
+    doc.text("DEVIS", 196, 18, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.text(d.numero, 196, 26, { align: "right" });
+    doc.text(`Statut : ${d.statut}`, 196, 33, { align: "right" });
+
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(14, 54, 84, 48, 3, 3, "F");
+    doc.roundedRect(112, 54, 84, 48, 3, 3, "F");
 
     doc.setTextColor(15, 23, 42);
-    doc.setFontSize(11);
     doc.setFont("helvetica", "bold");
-    doc.text("Client", 124, 57);
+    doc.setFontSize(10);
+    doc.text("Émetteur", 20, 65);
+    doc.text("Client", 118, 65);
 
-    doc.setFontSize(9);
     doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
     doc.setTextColor(71, 85, 105);
-    doc.text(d.client || "-", 124, 67);
-    doc.text(d.societe || "-", 124, 74);
-    doc.text(d.email || "-", 124, 81);
-    doc.text(d.telephone || "-", 124, 88);
-    doc.text(`Échéance : ${d.echeance || "-"}`, 124, 95);
+    doc.text(settings.adresse || "-", 20, 73);
+    doc.text(settings.ville || "-", 20, 79);
+    doc.text(`Téléphone : ${settings.telephone || "-"}`, 20, 85);
+    doc.text(`Email : ${settings.email || "-"}`, 20, 91);
+    doc.text(`SIRET : ${settings.siret || "-"}`, 20, 97);
+
+    doc.text(d.client || "-", 118, 73);
+    doc.text(d.societe || "-", 118, 79);
+    doc.text(d.email || "-", 118, 85);
+    doc.text(d.telephone || "-", 118, 91);
+    doc.text(`Validité : 30 jours`, 118, 97);
 
     autoTable(doc, {
-      startY: 114,
+      startY: 116,
       head: [["Référence", "Désignation", "Qté", "PU HT", "Montant HT"]],
       body: d.lignes.map((l) => [
         l.reference || "-",
         l.designation,
         l.quantite,
-        `${l.prixUnitaire.toFixed(2)} €`,
-        `${(l.quantite * l.prixUnitaire).toFixed(2)} €`,
+        formatEuro(l.prixUnitaire),
+        formatEuro(l.quantite * l.prixUnitaire),
       ]),
       styles: {
         fontSize: 9,
@@ -1138,7 +1416,7 @@ export default function Dashboard({
         lineWidth: 0.1,
       },
       headStyles: {
-        fillColor: [15, 23, 42],
+        fillColor: [r, g, b],
         textColor: [255, 255, 255],
         fontStyle: "bold",
       },
@@ -1154,51 +1432,67 @@ export default function Dashboard({
       },
     });
 
-    const finalY = ((doc as AutoTableDoc).lastAutoTable?.finalY ?? 114) + 10;
-    const totalBoxY = Math.min(finalY, 194);
+    const finalY = ((doc as AutoTableDoc).lastAutoTable?.finalY ?? 116) + 10;
+    const totalBoxY = Math.min(finalY, 190);
 
-    doc.setDrawColor(226, 232, 240);
-    doc.roundedRect(118, totalBoxY, 78, 44, 2, 2);
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(112, totalBoxY, 84, 58, 3, 3, "F");
 
     doc.setFontSize(9);
     doc.setTextColor(71, 85, 105);
-    doc.text(`Port HT`, 124, totalBoxY + 10);
-    doc.text(`${d.portHT.toFixed(2)} €`, 174, totalBoxY + 10, { align: "right" });
-    doc.text(`Total HT`, 124, totalBoxY + 18);
-    doc.text(`${totalHTValue.toFixed(2)} €`, 174, totalBoxY + 18, { align: "right" });
-    doc.text(`TVA 20%`, 124, totalBoxY + 26);
-    doc.text(`${totalTVAValue.toFixed(2)} €`, 174, totalBoxY + 26, { align: "right" });
+    doc.text("Sous-total HT", 120, totalBoxY + 11);
+    doc.text(formatEuro(totalHTValue - d.portHT), 188, totalBoxY + 11, {
+      align: "right",
+    });
+    doc.text("Port HT", 120, totalBoxY + 20);
+    doc.text(formatEuro(d.portHT), 188, totalBoxY + 20, { align: "right" });
+    doc.text("Total HT", 120, totalBoxY + 29);
+    doc.text(formatEuro(totalHTValue), 188, totalBoxY + 29, { align: "right" });
+    doc.text("TVA 20%", 120, totalBoxY + 38);
+    doc.text(formatEuro(totalTVAValue), 188, totalBoxY + 38, { align: "right" });
 
-    doc.setFillColor(15, 23, 42);
-    doc.roundedRect(118, totalBoxY + 32, 78, 12, 2, 2, "F");
+    doc.setFillColor(r, g, b);
+    doc.roundedRect(112, totalBoxY + 44, 84, 14, 2, 2, "F");
     doc.setTextColor(255, 255, 255);
     doc.setFont("helvetica", "bold");
-    doc.text(`Total TTC`, 124, totalBoxY + 40);
-    doc.text(`${totalTTCValue.toFixed(2)} €`, 190, totalBoxY + 40, { align: "right" });
+    doc.text("Total TTC", 120, totalBoxY + 53);
+    doc.text(formatEuro(totalTTCValue), 188, totalBoxY + 53, { align: "right" });
 
     doc.setFont("helvetica", "bold");
     doc.setTextColor(15, 23, 42);
     doc.setFontSize(10);
-    doc.text("Conditions commerciales", 14, 220);
+    doc.text("Conditions commerciales", 14, 218);
 
     doc.setFont("helvetica", "normal");
     doc.setTextColor(71, 85, 105);
     doc.setFontSize(9);
-    doc.text("Devis valable 30 jours à compter de sa date d'émission.", 14, 229);
-    doc.text(`Règlement : ${d.echeance || "selon conditions indiquées"}.`, 14, 237);
+    doc.text("Devis valable 30 jours à compter de sa date d'émission.", 14, 227);
+    doc.text(`Règlement : ${d.echeance || "selon conditions indiquées"}.`, 14, 235);
     doc.text(
       acompteValue > 0
-        ? `Acompte à la validation : ${acompteValue.toFixed(2)} € TTC.`
+        ? `Acompte à la validation : ${formatEuro(acompteValue)} TTC.`
         : "Acompte : selon conditions convenues.",
       14,
-      245
+      243
     );
-    doc.text("Solde payable selon l'échéance convenue entre les parties.", 14, 253);
+    doc.text("Solde payable selon l'échéance convenue entre les parties.", 14, 251);
 
-    doc.setDrawColor(203, 213, 225);
-    doc.line(14, 268, 96, 268);
-    doc.setTextColor(71, 85, 105);
-    doc.text("Signature client précédée de la mention Bon pour accord", 14, 275);
+    if (d.signataireNom || d.dateAcceptation || d.responseLockedAt) {
+      doc.setFillColor(236, 253, 245);
+      doc.roundedRect(14, 258, 84, 22, 2, 2, "F");
+      doc.setTextColor(6, 95, 70);
+      doc.setFont("helvetica", "bold");
+      doc.text("Acceptation enregistrée", 20, 267);
+      doc.setFont("helvetica", "normal");
+      doc.text(`Signataire : ${d.signataireNom || "-"}`, 20, 274);
+    }
+
+    if (!d.signataireNom) {
+      doc.setDrawColor(203, 213, 225);
+      doc.line(14, 268, 96, 268);
+      doc.setTextColor(71, 85, 105);
+      doc.text("Signature client précédée de la mention Bon pour accord", 14, 275);
+    }
 
     doc.save(`${d.numero}.pdf`);
   }
@@ -1272,15 +1566,25 @@ export default function Dashboard({
       <div className="mx-auto max-w-7xl">
         <header className="rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow">
           <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
-                Activité commerciale
-              </p>
-              <h1 className="mt-3 text-4xl font-black">DevisFlow</h1>
-              <p className="mt-3 max-w-2xl text-slate-300">
-                Suivez les devis envoyés, les accords signés et les montants à
-                relancer depuis une vue claire.
-              </p>
+            <div className="flex items-start gap-4">
+              <BrandAvatar settings={settings} size="large" />
+              <div>
+                <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
+                  Activité commerciale
+                </p>
+                <h1 className="mt-3 text-4xl font-black">
+                  {settings.nom || "DevisFlow"}
+                </h1>
+                <p className="mt-3 max-w-2xl text-slate-300">
+                  Suivez les devis envoyés, les accords signés et les montants à
+                  relancer depuis une vue claire.
+                </p>
+                {settings.siteWeb && (
+                  <p className="mt-2 text-sm text-slate-500">
+                    {displayWebsite(settings.siteWeb)}
+                  </p>
+                )}
+              </div>
             </div>
 
             <button
@@ -1314,6 +1618,8 @@ export default function Dashboard({
             settings={settings}
             setSettings={setSettings}
             sauvegarderSettings={sauvegarderSettings}
+            onLogoUpload={uploadLogo}
+            logoUploading={logoUploading}
           />
         )}
 
@@ -1475,14 +1781,22 @@ export default function Dashboard({
                         </button>
                       )}
 
-                      <button
-                        onClick={() => telechargerFacturePDF(f)}
-                        className="rounded-lg border border-slate-700 px-3 py-2"
-                      >
-                        PDF détaillé
-                      </button>
+	                      <button
+	                        onClick={() => telechargerFacturePDF(f)}
+	                        className="rounded-lg border border-slate-700 px-3 py-2"
+	                      >
+	                        PDF détaillé
+	                      </button>
 
-                      <button
+	                      <button
+	                        onClick={() => envoyerFactureParEmail(f)}
+	                        disabled={factureSendingId === f.id}
+	                        className="rounded-lg border border-blue-500 px-3 py-2 text-blue-300 disabled:opacity-50"
+	                      >
+	                        {factureSendingId === f.id ? "Envoi..." : "Envoyer"}
+	                      </button>
+
+	                      <button
                         onClick={() => supprimerFacture(f)}
                         className="rounded-lg border border-red-500 px-3 py-2 text-red-300"
                       >
@@ -1924,6 +2238,40 @@ function Tab({
     >
       {label}
     </button>
+  );
+}
+
+function BrandAvatar({
+  settings,
+  size = "normal",
+}: {
+  settings: Settings;
+  size?: "normal" | "large";
+}) {
+  const dimension = size === "large" ? "h-16 w-16" : "h-12 w-12";
+  const textSize = size === "large" ? "text-xl" : "text-base";
+  const color = normalizeBrandColor(settings.couleurPrincipale);
+
+  return (
+    <div
+      className={`${dimension} flex shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-slate-700 bg-slate-950`}
+    >
+      {settings.logoUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={settings.logoUrl}
+          alt={settings.nom || "Logo entreprise"}
+          className="h-full w-full object-contain p-2"
+        />
+      ) : (
+        <span
+          className={`flex h-full w-full items-center justify-center font-black text-white ${textSize}`}
+          style={{ backgroundColor: color }}
+        >
+          {initials(settings.nom)}
+        </span>
+      )}
+    </div>
   );
 }
 
