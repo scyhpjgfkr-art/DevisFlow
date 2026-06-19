@@ -191,6 +191,18 @@ export default function DevisPublicPage() {
         setDevis(data);
         setSignataireNom(data?.signataire_nom || "");
         setCommentaire(data?.commentaire_client || "");
+
+        if (data?.id) {
+          void fetch("/api/devis-vu", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ token }),
+          }).catch((viewError) => {
+            console.warn("Suivi de consultation indisponible", viewError);
+          });
+        }
       }
 
       setLoading(false);

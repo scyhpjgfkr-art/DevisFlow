@@ -10,6 +10,14 @@ import OnboardingPremiersPas from "./OnboardingPremiersPas";
 
 type Statut = "Brouillon" | "Envoyé" | "À relancer" | "Accepté" | "Refusé";
 type AcompteType = "none" | "percent" | "fixed";
+type TypeClient = "B2B" | "B2C" | "B2G";
+type CategorieOperation = "services" | "biens" | "mixte";
+type StatutEFacture =
+  | "non_transmise"
+  | "a_preparer"
+  | "transmise"
+  | "rejetee"
+  | "acceptee";
 
 type LigneDevis = {
   reference: string;
@@ -25,12 +33,23 @@ type Devis = {
   societe: string;
   email: string;
   telephone: string;
+  typeClient: TypeClient;
+  sirenClient: string;
+  siretClient: string;
+  tvaIntracomClient: string;
+  paysClient: string;
+  adresseCompleteClient: string;
+  categorieOperation: CategorieOperation;
+  statutEFacture: StatutEFacture;
   echeance: string;
   portHT: number;
   lignes: LigneDevis[];
   statut: Statut;
   dateCreation: string;
   dateEnvoi?: string;
+  dateVue?: string;
+  derniereVue?: string;
+  nombreVues?: number;
   derniereRelance?: string;
   publicToken?: string;
   acompteType?: AcompteType;
@@ -38,8 +57,14 @@ type Devis = {
   acomptePourcentage?: number;
   acompteStatut?: string;
   signataireNom?: string;
+  commentaireClient?: string;
+  dateReponse?: string;
   dateAcceptation?: string;
+  dateRefus?: string;
   responseLockedAt?: string;
+  ipReponse?: string;
+  devisVersion?: number;
+  conditionsDevis?: string;
 };
 
 type Settings = {
@@ -63,6 +88,12 @@ type Client = {
   telephone: string;
   adresse: string;
   ville: string;
+  typeClient: TypeClient;
+  sirenClient: string;
+  siretClient: string;
+  tvaIntracomClient: string;
+  paysClient: string;
+  adresseCompleteClient: string;
 };
 
 type Produit = {
@@ -88,9 +119,18 @@ type Facture = {
   societe: string;
   email: string;
   telephone: string;
+  typeClient: TypeClient;
+  sirenClient: string;
+  siretClient: string;
+  tvaIntracomClient: string;
+  paysClient: string;
+  adresseCompleteClient: string;
+  categorieOperation: CategorieOperation;
+  statutEFacture: StatutEFacture;
   totalHT: number;
   totalTTC: number;
   dateCreation: string;
+  dateEnvoi?: string;
   statut: "À payer" | "Payée";
   lignes?: FactureLigne[];
 };
@@ -103,6 +143,12 @@ type ClientRow = {
   telephone?: string | null;
   adresse?: string | null;
   ville?: string | null;
+  type_client?: string | null;
+  siren_client?: string | null;
+  siret_client?: string | null;
+  tva_intracom_client?: string | null;
+  pays_client?: string | null;
+  adresse_complete_client?: string | null;
 };
 
 type ProduitRow = {
@@ -129,9 +175,18 @@ type FactureRow = {
   societe?: string | null;
   email?: string | null;
   telephone?: string | null;
+  type_client?: string | null;
+  siren_client?: string | null;
+  siret_client?: string | null;
+  tva_intracom_client?: string | null;
+  pays_client?: string | null;
+  adresse_complete_client?: string | null;
+  categorie_operation?: string | null;
+  statut_e_facture?: string | null;
   total_ht?: number | null;
   total_ttc?: number | null;
   date_creation?: string | null;
+  date_envoi?: string | null;
   statut?: Facture["statut"] | null;
   lignes_factures?: LigneFactureRow[] | null;
 };
@@ -160,11 +215,22 @@ type DevisRow = {
   societe?: string | null;
   email?: string | null;
   telephone?: string | null;
+  type_client?: string | null;
+  siren_client?: string | null;
+  siret_client?: string | null;
+  tva_intracom_client?: string | null;
+  pays_client?: string | null;
+  adresse_complete_client?: string | null;
+  categorie_operation?: string | null;
+  statut_e_facture?: string | null;
   echeance?: string | null;
   port_ht?: number | null;
   statut?: Statut | null;
   date_creation?: string | null;
   date_envoi?: string | null;
+  date_vue?: string | null;
+  derniere_vue?: string | null;
+  nombre_vues?: number | null;
   derniere_relance?: string | null;
   public_token?: string | null;
   acompte_type?: AcompteType | null;
@@ -172,8 +238,14 @@ type DevisRow = {
   acompte_pourcentage?: number | null;
   acompte_statut?: string | null;
   signataire_nom?: string | null;
+  commentaire_client?: string | null;
+  date_reponse?: string | null;
   date_acceptation?: string | null;
+  date_refus?: string | null;
   response_locked_at?: string | null;
+  ip_reponse?: string | null;
+  devis_version?: number | null;
+  conditions_devis?: string | null;
   lignes_devis?: LigneDevisRow[] | null;
 };
 
@@ -191,6 +263,22 @@ type DevisAvecStatutAuto = Devis & {
   statutAffiche: Statut;
 };
 
+type PipelineStage =
+  | "Envoyé"
+  | "Vu"
+  | "Accepté"
+  | "Acompte payé"
+  | "Facture envoyée"
+  | "Facture payée";
+
+type DevisTemplate = {
+  name: string;
+  description: string;
+  echeance: string;
+  conditions: string;
+  lignes: LigneDevis[];
+};
+
 type AutoTableDoc = jsPDF & {
   lastAutoTable?: {
     finalY: number;
@@ -198,6 +286,158 @@ type AutoTableDoc = jsPDF & {
 };
 
 const DEFAULT_BRAND_COLOR = "#0f172a";
+
+const DEFAULT_CONDITIONS =
+  "Devis valable 30 jours à compter de sa date d'émission.\n" +
+  "Acompte payable à l'acceptation si indiqué sur le devis.\n" +
+  "Le solde est dû selon les conditions de règlement convenues.\n" +
+  "Toute prestation hors périmètre fera l'objet d'un devis complémentaire.";
+
+const TYPE_CLIENT_OPTIONS: { value: TypeClient; label: string }[] = [
+  { value: "B2B", label: "Entreprise (B2B)" },
+  { value: "B2C", label: "Particulier (B2C)" },
+  { value: "B2G", label: "Administration (B2G)" },
+];
+
+const CATEGORIE_OPERATION_OPTIONS: {
+  value: CategorieOperation;
+  label: string;
+}[] = [
+  { value: "services", label: "Services" },
+  { value: "biens", label: "Biens" },
+  { value: "mixte", label: "Biens et services" },
+];
+
+const STATUT_E_FACTURE_OPTIONS: { value: StatutEFacture; label: string }[] = [
+  { value: "non_transmise", label: "Non transmise" },
+  { value: "a_preparer", label: "À préparer" },
+  { value: "transmise", label: "Transmise" },
+  { value: "rejetee", label: "Rejetée" },
+  { value: "acceptee", label: "Acceptée" },
+];
+
+const DEVIS_TEMPLATES: DevisTemplate[] = [
+  {
+    name: "Agence Web",
+    description: "Site vitrine, cadrage, conception, développement et mise en ligne.",
+    echeance: "50% à la validation, solde à la mise en ligne",
+    conditions:
+      "Devis valable 30 jours.\n" +
+      "Le planning démarre après réception des contenus client et paiement de l'acompte.\n" +
+      "Deux cycles de retours sont inclus par livrable.\n" +
+      "Les demandes hors périmètre feront l'objet d'un devis complémentaire.",
+    lignes: [
+      {
+        reference: "WEB-01",
+        designation: "Cadrage, arborescence et maquettes principales",
+        quantite: 1,
+        prixUnitaire: 900,
+      },
+      {
+        reference: "WEB-02",
+        designation: "Développement du site vitrine responsive",
+        quantite: 1,
+        prixUnitaire: 2200,
+      },
+      {
+        reference: "WEB-03",
+        designation: "Mise en ligne, tests et accompagnement de prise en main",
+        quantite: 1,
+        prixUnitaire: 450,
+      },
+    ],
+  },
+  {
+    name: "Consultant",
+    description: "Mission de conseil structurée avec cadrage, ateliers et restitution.",
+    echeance: "À réception de facture",
+    conditions:
+      "Devis valable 30 jours.\n" +
+      "Les rendez-vous sont planifiés d'un commun accord.\n" +
+      "Les livrables sont transmis au format numérique.\n" +
+      "Toute journée supplémentaire fera l'objet d'une validation préalable.",
+    lignes: [
+      {
+        reference: "CONS-01",
+        designation: "Cadrage de mission et analyse initiale",
+        quantite: 1,
+        prixUnitaire: 650,
+      },
+      {
+        reference: "CONS-02",
+        designation: "Ateliers de travail et recommandations opérationnelles",
+        quantite: 3,
+        prixUnitaire: 750,
+      },
+      {
+        reference: "CONS-03",
+        designation: "Synthèse finale et plan d'action priorisé",
+        quantite: 1,
+        prixUnitaire: 700,
+      },
+    ],
+  },
+  {
+    name: "Maintenance",
+    description: "Intervention, maintenance préventive et compte rendu.",
+    echeance: "30 jours fin de mois",
+    conditions:
+      "Devis valable 30 jours.\n" +
+      "Intervention réalisée sur rendez-vous selon disponibilité des équipes.\n" +
+      "Les pièces non prévues au devis seront facturées après validation client.\n" +
+      "Un compte rendu d'intervention est remis après prestation.",
+    lignes: [
+      {
+        reference: "MAINT-01",
+        designation: "Diagnostic initial et préparation d'intervention",
+        quantite: 1,
+        prixUnitaire: 180,
+      },
+      {
+        reference: "MAINT-02",
+        designation: "Intervention de maintenance sur site",
+        quantite: 4,
+        prixUnitaire: 85,
+      },
+      {
+        reference: "MAINT-03",
+        designation: "Compte rendu et recommandations de suivi",
+        quantite: 1,
+        prixUnitaire: 120,
+      },
+    ],
+  },
+  {
+    name: "Formation",
+    description: "Session de formation avec préparation, animation et supports.",
+    echeance: "À réception de facture",
+    conditions:
+      "Devis valable 30 jours.\n" +
+      "La session est confirmée après validation du devis.\n" +
+      "Les supports pédagogiques sont inclus au format numérique.\n" +
+      "Toute annulation à moins de 7 jours ouvrés pourra être facturée.",
+    lignes: [
+      {
+        reference: "FORM-01",
+        designation: "Préparation pédagogique et adaptation du contenu",
+        quantite: 1,
+        prixUnitaire: 450,
+      },
+      {
+        reference: "FORM-02",
+        designation: "Animation formation intra-entreprise",
+        quantite: 1,
+        prixUnitaire: 1200,
+      },
+      {
+        reference: "FORM-03",
+        designation: "Supports, quiz et synthèse post-formation",
+        quantite: 1,
+        prixUnitaire: 250,
+      },
+    ],
+  },
+];
 
 function normalizeBrandColor(value?: string) {
   return /^#[0-9a-fA-F]{6}$/.test(value || "")
@@ -233,6 +473,37 @@ function normalizeWebsite(value?: string) {
 
 function displayWebsite(value?: string) {
   return normalizeWebsite(value).replace(/^https?:\/\//, "");
+}
+
+function normalizeTypeClient(value?: string | null): TypeClient {
+  if (value === "B2C" || value === "B2G") return value;
+  return "B2B";
+}
+
+function normalizeCategorieOperation(value?: string | null): CategorieOperation {
+  if (value === "biens" || value === "mixte") return value;
+  return "services";
+}
+
+function normalizeStatutEFacture(value?: string | null): StatutEFacture {
+  if (
+    value === "a_preparer" ||
+    value === "transmise" ||
+    value === "rejetee" ||
+    value === "acceptee"
+  ) {
+    return value;
+  }
+
+  return "non_transmise";
+}
+
+function statutEFactureLabel(value?: string | null) {
+  const statut = normalizeStatutEFacture(value);
+  return (
+    STATUT_E_FACTURE_OPTIONS.find((option) => option.value === statut)?.label ||
+    "Non transmise"
+  );
 }
 
 async function logoToPngDataUrl(url?: string) {
@@ -289,6 +560,18 @@ function drawPdfBrandMark(
 
 function formatEuro(value: number) {
   return `${value.toFixed(2)} €`;
+}
+
+function formatDateTime(value?: string) {
+  if (!value) return "-";
+
+  return new Date(value).toLocaleString("fr-FR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 async function readApiResponse(response: Response): Promise<SendFactureResponse> {
@@ -373,7 +656,16 @@ export default function Dashboard({
   const [societe, setSociete] = useState("");
   const [email, setEmail] = useState("");
   const [telephone, setTelephone] = useState("");
+  const [typeClient, setTypeClient] = useState<TypeClient>("B2B");
+  const [sirenClient, setSirenClient] = useState("");
+  const [siretClient, setSiretClient] = useState("");
+  const [tvaIntracomClient, setTvaIntracomClient] = useState("");
+  const [paysClient, setPaysClient] = useState("France");
+  const [adresseCompleteClient, setAdresseCompleteClient] = useState("");
+  const [categorieOperation, setCategorieOperation] =
+    useState<CategorieOperation>("services");
   const [echeance, setEcheance] = useState("À réception de facture");
+  const [conditionsDevis, setConditionsDevis] = useState(DEFAULT_CONDITIONS);
   const [portHT, setPortHT] = useState(0);
   const [acompteType, setAcompteType] = useState<AcompteType>("none");
   const [acompteMontant, setAcompteMontant] = useState(0);
@@ -389,6 +681,12 @@ export default function Dashboard({
     telephone: "",
     adresse: "",
     ville: "",
+    typeClient: "B2B",
+    sirenClient: "",
+    siretClient: "",
+    tvaIntracomClient: "",
+    paysClient: "France",
+    adresseCompleteClient: "",
   });
 
   const [newProduit, setNewProduit] = useState<Produit>({
@@ -510,6 +808,16 @@ export default function Dashboard({
     setLogoUploading(false);
   }
 
+  async function supprimerLogo() {
+    const nextSettings = {
+      ...settings,
+      logoUrl: "",
+    };
+
+    setSettings(nextSettings);
+    await sauvegarderSettings(nextSettings);
+  }
+
   async function chargerClients() {
     const { data, error } = await supabase
       .from("clients")
@@ -531,6 +839,14 @@ export default function Dashboard({
         telephone: c.telephone || "",
         adresse: c.adresse || "",
         ville: c.ville || "",
+        typeClient: normalizeTypeClient(c.type_client),
+        sirenClient: c.siren_client || "",
+        siretClient: c.siret_client || "",
+        tvaIntracomClient: c.tva_intracom_client || "",
+        paysClient: c.pays_client || "France",
+        adresseCompleteClient:
+          c.adresse_complete_client ||
+          [c.adresse, c.ville].filter(Boolean).join(", "),
       }))
     );
   }
@@ -549,6 +865,14 @@ export default function Dashboard({
       telephone: newClient.telephone,
       adresse: newClient.adresse,
       ville: newClient.ville,
+      type_client: newClient.typeClient,
+      siren_client: newClient.sirenClient,
+      siret_client: newClient.siretClient,
+      tva_intracom_client: newClient.tvaIntracomClient,
+      pays_client: newClient.paysClient,
+      adresse_complete_client:
+        newClient.adresseCompleteClient ||
+        [newClient.adresse, newClient.ville].filter(Boolean).join(", "),
     });
 
     if (error) {
@@ -564,6 +888,12 @@ export default function Dashboard({
       telephone: "",
       adresse: "",
       ville: "",
+      typeClient: "B2B",
+      sirenClient: "",
+      siretClient: "",
+      tvaIntracomClient: "",
+      paysClient: "France",
+      adresseCompleteClient: "",
     });
 
     await chargerClients();
@@ -685,9 +1015,18 @@ export default function Dashboard({
           societe: f.societe || "",
           email: f.email || "",
           telephone: f.telephone || "",
+          typeClient: normalizeTypeClient(f.type_client),
+          sirenClient: f.siren_client || "",
+          siretClient: f.siret_client || "",
+          tvaIntracomClient: f.tva_intracom_client || "",
+          paysClient: f.pays_client || "",
+          adresseCompleteClient: f.adresse_complete_client || "",
+          categorieOperation: normalizeCategorieOperation(f.categorie_operation),
+          statutEFacture: normalizeStatutEFacture(f.statut_e_facture),
           totalHT: Number(f.total_ht || 0),
           totalTTC: Number(f.total_ttc || 0),
           dateCreation: f.date_creation || new Date().toISOString(),
+          dateEnvoi: f.date_envoi || undefined,
           statut: f.statut || "À payer",
           lignes: lignesSource.map(mapLigneFacture),
         };
@@ -718,6 +1057,14 @@ export default function Dashboard({
         societe: d.societe,
         email: d.email,
         telephone: d.telephone,
+        type_client: d.typeClient,
+        siren_client: d.sirenClient,
+        siret_client: d.siretClient,
+        tva_intracom_client: d.tvaIntracomClient,
+        pays_client: d.paysClient,
+        adresse_complete_client: d.adresseCompleteClient,
+        categorie_operation: d.categorieOperation,
+        statut_e_facture: "non_transmise",
         total_ht: totalHT(d.lignes, d.portHT),
         total_ttc: totalTTC(d.lignes, d.portHT),
         statut: "À payer",
@@ -943,22 +1290,39 @@ export default function Dashboard({
           societe: d.societe || "",
           email: d.email || "",
           telephone: d.telephone || "",
+          typeClient: normalizeTypeClient(d.type_client),
+          sirenClient: d.siren_client || "",
+          siretClient: d.siret_client || "",
+          tvaIntracomClient: d.tva_intracom_client || "",
+          paysClient: d.pays_client || "",
+          adresseCompleteClient: d.adresse_complete_client || "",
+          categorieOperation: normalizeCategorieOperation(d.categorie_operation),
+          statutEFacture: normalizeStatutEFacture(d.statut_e_facture),
           echeance: d.echeance || "À réception de facture",
           portHT: Number(d.port_ht || 0),
-          statut: d.statut || "Brouillon",
-          dateCreation: d.date_creation || new Date().toISOString(),
-          dateEnvoi: d.date_envoi || undefined,
-          derniereRelance: d.derniere_relance || undefined,
-          publicToken: d.public_token || undefined,
-          acompteType: d.acompte_type || "none",
-          acompteMontant: Number(d.acompte_montant || 0),
-          acomptePourcentage: Number(d.acompte_pourcentage || 0),
-          acompteStatut: d.acompte_statut || undefined,
-          signataireNom: d.signataire_nom || undefined,
-          dateAcceptation: d.date_acceptation || undefined,
-          responseLockedAt: d.response_locked_at || undefined,
-          lignes: lignesSource.map(mapLigneDevis),
-        };
+        statut: d.statut || "Brouillon",
+        dateCreation: d.date_creation || new Date().toISOString(),
+        dateEnvoi: d.date_envoi || undefined,
+        dateVue: d.date_vue || undefined,
+        derniereVue: d.derniere_vue || undefined,
+        nombreVues: Number(d.nombre_vues || 0),
+        derniereRelance: d.derniere_relance || undefined,
+        publicToken: d.public_token || undefined,
+        acompteType: d.acompte_type || "none",
+        acompteMontant: Number(d.acompte_montant || 0),
+        acomptePourcentage: Number(d.acompte_pourcentage || 0),
+        acompteStatut: d.acompte_statut || undefined,
+        signataireNom: d.signataire_nom || undefined,
+        commentaireClient: d.commentaire_client || undefined,
+        dateReponse: d.date_reponse || undefined,
+        dateAcceptation: d.date_acceptation || undefined,
+        dateRefus: d.date_refus || undefined,
+        responseLockedAt: d.response_locked_at || undefined,
+        ipReponse: d.ip_reponse || undefined,
+        devisVersion: Number(d.devis_version || 1),
+        conditionsDevis: d.conditions_devis || "",
+        lignes: lignesSource.map(mapLigneDevis),
+      };
       })
     );
   }
@@ -1029,12 +1393,78 @@ export default function Dashboard({
       : "Envoyé";
   }
 
+  function facturePourDevis(d: Devis) {
+    return factures.find((f) => f.devisId === d.id);
+  }
+
+  function pipelineStage(d: Devis): PipelineStage {
+    const facture = facturePourDevis(d);
+
+    if (facture?.statut === "Payée") return "Facture payée";
+    if (facture?.dateEnvoi) return "Facture envoyée";
+    if (d.acompteStatut === "paid") return "Acompte payé";
+    if (d.statut === "Accepté" || d.dateAcceptation) return "Accepté";
+    if (d.dateVue) return "Vu";
+    return "Envoyé";
+  }
+
+  function timelineSteps(d: Devis) {
+    const facture = facturePourDevis(d);
+
+    return [
+      {
+        label: "Envoyé",
+        done: Boolean(d.dateEnvoi || d.statut !== "Brouillon"),
+        detail: d.dateEnvoi ? formatDateTime(d.dateEnvoi) : "",
+      },
+      {
+        label: "Vu",
+        done: Boolean(d.dateVue),
+        detail: d.dateVue
+          ? `${formatDateTime(d.dateVue)}${
+              d.nombreVues ? ` · ${d.nombreVues} vue${d.nombreVues > 1 ? "s" : ""}` : ""
+            }`
+          : "",
+      },
+      {
+        label: "Accepté",
+        done: Boolean(d.dateAcceptation || d.statut === "Accepté"),
+        detail: d.dateAcceptation
+          ? `${formatDateTime(d.dateAcceptation)} · ${d.signataireNom || "Signataire"}`
+          : "",
+      },
+      {
+        label: "Acompte payé",
+        done: d.acompteStatut === "paid",
+        detail: d.acompteStatut === "paid" ? "Paiement confirmé" : "",
+      },
+      {
+        label: "Facture envoyée",
+        done: Boolean(facture?.dateEnvoi),
+        detail: facture?.dateEnvoi ? formatDateTime(facture.dateEnvoi) : "",
+      },
+      {
+        label: "Facture payée",
+        done: facture?.statut === "Payée",
+        detail: facture?.statut === "Payée" ? "Réglée" : "",
+      },
+    ];
+  }
+
   function resetForm() {
     setClient("");
     setSociete("");
     setEmail("");
     setTelephone("");
+    setTypeClient("B2B");
+    setSirenClient("");
+    setSiretClient("");
+    setTvaIntracomClient("");
+    setPaysClient("France");
+    setAdresseCompleteClient("");
+    setCategorieOperation("services");
     setEcheance("À réception de facture");
+    setConditionsDevis(DEFAULT_CONDITIONS);
     setPortHT(0);
     setAcompteType("none");
     setAcompteMontant(0);
@@ -1066,6 +1496,15 @@ export default function Dashboard({
     setSociete(selected.societe);
     setEmail(selected.email);
     setTelephone(selected.telephone);
+    setTypeClient(selected.typeClient);
+    setSirenClient(selected.sirenClient);
+    setSiretClient(selected.siretClient);
+    setTvaIntracomClient(selected.tvaIntracomClient);
+    setPaysClient(selected.paysClient || "France");
+    setAdresseCompleteClient(
+      selected.adresseCompleteClient ||
+        [selected.adresse, selected.ville].filter(Boolean).join(", ")
+    );
   }
 
   function appliquerProduit(index: number, produitId: string) {
@@ -1081,6 +1520,14 @@ export default function Dashboard({
     };
 
     setLignes(copy);
+  }
+
+  function appliquerModele(template: DevisTemplate) {
+    setEcheance(template.echeance);
+    setConditionsDevis(template.conditions);
+    setLignes(template.lignes.map((ligne) => ({ ...ligne })));
+    setShowForm(true);
+    setPreview(null);
   }
 
   async function genererAvecIA() {
@@ -1149,7 +1596,16 @@ export default function Dashboard({
       societe,
       email,
       telephone,
+      typeClient,
+      sirenClient,
+      siretClient,
+      tvaIntracomClient,
+      paysClient,
+      adresseCompleteClient,
+      categorieOperation,
+      statutEFacture: editingDevis?.statutEFacture ?? "non_transmise",
       echeance,
+      conditionsDevis,
       portHT,
       lignes,
       statut: editingDevis?.statut ?? "Brouillon",
@@ -1164,6 +1620,11 @@ export default function Dashboard({
       signataireNom: editingDevis?.signataireNom,
       dateAcceptation: editingDevis?.dateAcceptation,
       responseLockedAt: editingDevis?.responseLockedAt,
+      ipReponse: editingDevis?.ipReponse,
+      commentaireClient: editingDevis?.commentaireClient,
+      dateReponse: editingDevis?.dateReponse,
+      dateRefus: editingDevis?.dateRefus,
+      devisVersion: editingDevis?.devisVersion || 1,
     });
   }
 
@@ -1178,9 +1639,19 @@ export default function Dashboard({
           societe: preview.societe,
           email: preview.email,
           telephone: preview.telephone,
+          type_client: preview.typeClient,
+          siren_client: preview.sirenClient,
+          siret_client: preview.siretClient,
+          tva_intracom_client: preview.tvaIntracomClient,
+          pays_client: preview.paysClient,
+          adresse_complete_client: preview.adresseCompleteClient,
+          categorie_operation: preview.categorieOperation,
+          statut_e_facture: preview.statutEFacture,
           echeance: preview.echeance,
+          conditions_devis: preview.conditionsDevis,
           port_ht: preview.portHT,
           statut: preview.statut,
+          devis_version: Number(preview.devisVersion || 1) + 1,
           acompte_type: preview.acompteType || "none",
           acompte_montant: preview.acompteType === "fixed" ? preview.acompteMontant || 0 : 0,
           acompte_pourcentage:
@@ -1209,10 +1680,20 @@ export default function Dashboard({
           societe: preview.societe,
           email: preview.email,
           telephone: preview.telephone,
+          type_client: preview.typeClient,
+          siren_client: preview.sirenClient,
+          siret_client: preview.siretClient,
+          tva_intracom_client: preview.tvaIntracomClient,
+          pays_client: preview.paysClient,
+          adresse_complete_client: preview.adresseCompleteClient,
+          categorie_operation: preview.categorieOperation,
+          statut_e_facture: preview.statutEFacture,
           echeance: preview.echeance,
+          conditions_devis: preview.conditionsDevis,
           port_ht: preview.portHT,
           statut: preview.statut,
           date_creation: preview.dateCreation,
+          devis_version: 1,
           public_token: preview.publicToken || crypto.randomUUID(),
           acompte_type: preview.acompteType || "none",
           acompte_montant: preview.acompteType === "fixed" ? preview.acompteMontant || 0 : 0,
@@ -1249,7 +1730,15 @@ export default function Dashboard({
     setSociete(d.societe);
     setEmail(d.email);
     setTelephone(d.telephone);
+    setTypeClient(d.typeClient);
+    setSirenClient(d.sirenClient);
+    setSiretClient(d.siretClient);
+    setTvaIntracomClient(d.tvaIntracomClient);
+    setPaysClient(d.paysClient || "France");
+    setAdresseCompleteClient(d.adresseCompleteClient);
+    setCategorieOperation(d.categorieOperation);
     setEcheance(d.echeance);
+    setConditionsDevis(d.conditionsDevis || DEFAULT_CONDITIONS);
     setPortHT(d.portHT);
     setAcompteType(d.acompteType || "none");
     setAcompteMontant(d.acompteMontant || 0);
@@ -1438,6 +1927,7 @@ export default function Dashboard({
       return;
     }
 
+    await chargerFactures();
     alert("Facture envoyée par email.");
   }
 
@@ -1455,6 +1945,11 @@ export default function Dashboard({
         : d.acompteType === "fixed"
         ? Number(d.acompteMontant || 0)
         : 0;
+    const conditions = (d.conditionsDevis || DEFAULT_CONDITIONS)
+      .split("\n")
+      .map((condition) => condition.trim())
+      .filter(Boolean)
+      .slice(0, 4);
 
     doc.setFillColor(248, 250, 252);
     doc.rect(0, 0, 210, 297, "F");
@@ -1573,16 +2068,13 @@ export default function Dashboard({
     doc.setFont("helvetica", "normal");
     doc.setTextColor(71, 85, 105);
     doc.setFontSize(9);
-    doc.text("Devis valable 30 jours à compter de sa date d'émission.", 14, 227);
-    doc.text(`Règlement : ${d.echeance || "selon conditions indiquées"}.`, 14, 235);
-    doc.text(
-      acompteValue > 0
-        ? `Acompte à la validation : ${formatEuro(acompteValue)} TTC.`
-        : "Acompte : selon conditions convenues.",
-      14,
-      243
-    );
-    doc.text("Solde payable selon l'échéance convenue entre les parties.", 14, 251);
+    conditions.forEach((condition, index) => {
+      doc.text(condition, 14, 227 + index * 8, { maxWidth: 90 });
+    });
+
+    if (acompteValue > 0) {
+      doc.text(`Acompte à la validation : ${formatEuro(acompteValue)} TTC.`, 14, 259);
+    }
 
     if (d.signataireNom || d.dateAcceptation || d.responseLockedAt) {
       doc.setFillColor(236, 253, 245);
@@ -1604,6 +2096,106 @@ export default function Dashboard({
     doc.save(`${d.numero}.pdf`);
   }
 
+  async function telechargerPreuveAcceptationPDF(d: Devis) {
+    if (!d.signataireNom && !d.dateAcceptation && d.statut !== "Accepté") {
+      alert("La preuve d'acceptation est disponible après acceptation du devis.");
+      return;
+    }
+
+    const doc = new jsPDF();
+    const logoDataUrl = await logoToPngDataUrl(settings.logoUrl);
+    const [r, g, b] = hexToRgb(settings.couleurPrincipale);
+    const totalHTValue = totalHT(d.lignes, d.portHT);
+    const totalTTCValue = totalTTC(d.lignes, d.portHT);
+    const responseDate = d.dateReponse || d.dateAcceptation || d.responseLockedAt;
+
+    doc.setFillColor(248, 250, 252);
+    doc.rect(0, 0, 210, 297, "F");
+    doc.setFillColor(r, g, b);
+    doc.rect(0, 0, 210, 42, "F");
+
+    drawPdfBrandMark(doc, settings, 14, 11, 18, logoDataUrl);
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(13);
+    doc.text(settings.nom || "Entreprise", 38, 18);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.text(settings.email || "", 38, 25);
+
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(19);
+    doc.text("PREUVE D'ACCEPTATION", 196, 19, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.text(d.numero, 196, 29, { align: "right" });
+
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(14, 56, 182, 58, 3, 3, "F");
+    doc.setTextColor(15, 23, 42);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("Document", 22, 70);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Numéro devis : ${d.numero || "-"}`, 22, 82);
+    doc.text(`Version du devis : ${d.devisVersion || 1}`, 22, 90);
+    doc.text(`Statut : ${d.statut}`, 22, 98);
+    doc.text(`Montant HT : ${formatEuro(totalHTValue)}`, 116, 82);
+    doc.text(`Montant TTC : ${formatEuro(totalTTCValue)}`, 116, 90);
+    doc.text(`Date du devis : ${formatDateTime(d.dateCreation)}`, 116, 98);
+
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(14, 124, 182, 76, 3, 3, "F");
+    doc.setTextColor(15, 23, 42);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("Acceptation client", 22, 138);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(`Nom du signataire : ${d.signataireNom || "-"}`, 22, 150);
+    doc.text(`Date et heure : ${formatDateTime(responseDate)}`, 22, 158);
+    doc.text(`Adresse IP : ${d.ipReponse || "Non renseignée"}`, 22, 166);
+    doc.text(`Client : ${d.client || "-"}${d.societe ? ` / ${d.societe}` : ""}`, 22, 174);
+    doc.text(`Email client : ${d.email || "-"}`, 22, 182);
+
+    const commentaire = d.commentaireClient || "Aucun commentaire client.";
+    doc.text("Commentaire :", 22, 190);
+    doc.text(commentaire, 58, 190, { maxWidth: 126 });
+
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(14, 212, 182, 48, 3, 3, "F");
+    doc.setTextColor(15, 23, 42);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text("Identité entreprise", 22, 226);
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text(settings.nom || "-", 22, 238);
+    doc.text(settings.adresse || "-", 22, 246);
+    doc.text(settings.ville || "-", 22, 254);
+    doc.text(`SIRET : ${settings.siret || "-"}`, 116, 238);
+    doc.text(`TVA : ${settings.tva || "-"}`, 116, 246);
+    doc.text(`Email : ${settings.email || "-"}`, 116, 254);
+
+    doc.setTextColor(100, 116, 139);
+    doc.setFontSize(8);
+    doc.text(
+      "Document généré depuis DevisFlow à partir des données enregistrées au moment de la réponse client.",
+      14,
+      280
+    );
+
+    doc.save(`preuve-acceptation-${d.numero}.pdf`);
+  }
+
   const devisAvecStatutAuto = devis.map((d) => ({
     ...d,
     statutAffiche: statutAuto(d),
@@ -1612,6 +2204,26 @@ export default function Dashboard({
   const devisAcceptes = devisAvecStatutAuto.filter((d) => d.statutAffiche === "Accepté");
   const devisRelance = devisAvecStatutAuto.filter((d) => d.statutAffiche === "À relancer");
   const devisEnvoyes = devisAvecStatutAuto.filter((d) => d.statutAffiche === "Envoyé");
+  const devisVus = devisAvecStatutAuto.filter((d) => Boolean(d.dateVue));
+  const devisAcomptePaye = devisAvecStatutAuto.filter(
+    (d) => d.acompteStatut === "paid"
+  );
+  const facturesEnvoyees = factures.filter((f) => Boolean(f.dateEnvoi));
+  const facturesPayees = factures.filter((f) => f.statut === "Payée");
+  const devisParEtape = {
+    "Envoyé": devisAvecStatutAuto.filter((d) => pipelineStage(d) === "Envoyé"),
+    "Vu": devisAvecStatutAuto.filter((d) => pipelineStage(d) === "Vu"),
+    "Accepté": devisAvecStatutAuto.filter((d) => pipelineStage(d) === "Accepté"),
+    "Acompte payé": devisAvecStatutAuto.filter(
+      (d) => pipelineStage(d) === "Acompte payé"
+    ),
+    "Facture envoyée": devisAvecStatutAuto.filter(
+      (d) => pipelineStage(d) === "Facture envoyée"
+    ),
+    "Facture payée": devisAvecStatutAuto.filter(
+      (d) => pipelineStage(d) === "Facture payée"
+    ),
+  } satisfies Record<PipelineStage, DevisAvecStatutAuto[]>;
 
   const chiffreSigne = devisAcceptes.reduce((s, d) => s + totalHT(d.lignes, d.portHT), 0);
   const chiffreFacture = factures.reduce((s, f) => s + f.totalHT, 0);
@@ -1726,6 +2338,7 @@ export default function Dashboard({
             setSettings={setSettings}
             sauvegarderSettings={sauvegarderSettings}
             onLogoUpload={uploadLogo}
+            onLogoRemove={supprimerLogo}
             logoUploading={logoUploading}
           />
         )}
@@ -1782,6 +2395,15 @@ export default function Dashboard({
               <Card title="Encaissé HT" value={`${chiffrePaye.toFixed(0)} €`} />
             </section>
 
+            <section className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-6">
+              <Card title="Envoyés" value={devisEnvoyes.length} />
+              <Card title="Vus" value={devisVus.length} />
+              <Card title="Acceptés" value={devisAcceptes.length} />
+              <Card title="Acomptes payés" value={devisAcomptePaye.length} />
+              <Card title="Factures envoyées" value={facturesEnvoyees.length} />
+              <Card title="Factures payées" value={facturesPayees.length} />
+            </section>
+
             <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
               <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
                 <div>
@@ -1797,32 +2419,37 @@ export default function Dashboard({
                 </div>
               </div>
 
-              <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-5">
+              <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-6">
                 <PipelineColumn
-                  title="Brouillons"
-                  devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "Brouillon")}
+                  title="Envoyé"
+                  devis={devisParEtape["Envoyé"]}
                   totalHT={totalHT}
-                  portKey="portHT"
                 />
                 <PipelineColumn
-                  title="Envoyés"
-                  devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "Envoyé")}
+                  title="Vu"
+                  devis={devisParEtape["Vu"]}
                   totalHT={totalHT}
-                  portKey="portHT"
                 />
                 <PipelineColumn
-                  title="À relancer"
-                  devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "À relancer")}
+                  title="Accepté"
+                  devis={devisParEtape["Accepté"]}
                   totalHT={totalHT}
-                  portKey="portHT"
                 />
                 <PipelineColumn
-                  title="Acceptés"
-                  devis={devisAvecStatutAuto.filter((d) => d.statutAffiche === "Accepté")}
+                  title="Acompte payé"
+                  devis={devisParEtape["Acompte payé"]}
                   totalHT={totalHT}
-                  portKey="portHT"
                 />
-                <FacturesPipelineColumn factures={factures} />
+                <PipelineColumn
+                  title="Facture envoyée"
+                  devis={devisParEtape["Facture envoyée"]}
+                  totalHT={totalHT}
+                />
+                <PipelineColumn
+                  title="Facture payée"
+                  devis={devisParEtape["Facture payée"]}
+                  totalHT={totalHT}
+                />
               </div>
             </section>
 
@@ -1865,6 +2492,7 @@ export default function Dashboard({
                   <th>Total HT</th>
                   <th>Total TTC</th>
                   <th>Statut</th>
+                  <th>E-facture</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1878,6 +2506,7 @@ export default function Dashboard({
                     <td>{f.totalHT.toFixed(2)} €</td>
                     <td>{f.totalTTC.toFixed(2)} €</td>
                     <td>{f.statut}</td>
+                    <td>{statutEFactureLabel(f.statutEFacture)}</td>
                     <td className="flex flex-wrap gap-2 py-3">
                       {f.statut !== "Payée" && (
                         <button
@@ -1931,6 +2560,17 @@ export default function Dashboard({
               <Input label="Téléphone" value={newClient.telephone} onChange={(v) => setNewClient({ ...newClient, telephone: v })} />
               <Input label="Adresse" value={newClient.adresse} onChange={(v) => setNewClient({ ...newClient, adresse: v })} />
               <Input label="Ville" value={newClient.ville} onChange={(v) => setNewClient({ ...newClient, ville: v })} />
+              <SelectInput
+                label="Type client"
+                value={newClient.typeClient}
+                options={TYPE_CLIENT_OPTIONS}
+                onChange={(v) => setNewClient({ ...newClient, typeClient: v })}
+              />
+              <Input label="SIREN client" value={newClient.sirenClient} onChange={(v) => setNewClient({ ...newClient, sirenClient: v })} />
+              <Input label="SIRET client" value={newClient.siretClient} onChange={(v) => setNewClient({ ...newClient, siretClient: v })} />
+              <Input label="TVA intracom client" value={newClient.tvaIntracomClient} onChange={(v) => setNewClient({ ...newClient, tvaIntracomClient: v })} />
+              <Input label="Pays client" value={newClient.paysClient} onChange={(v) => setNewClient({ ...newClient, paysClient: v })} />
+              <Input label="Adresse complète e-facture" value={newClient.adresseCompleteClient} onChange={(v) => setNewClient({ ...newClient, adresseCompleteClient: v })} />
             </div>
 
             <button onClick={ajouterClient} className="mt-6 rounded-xl bg-white px-5 py-3 font-semibold text-black">
@@ -1944,6 +2584,8 @@ export default function Dashboard({
                   <th>Société</th>
                   <th>Email</th>
                   <th>Téléphone</th>
+                  <th>Type</th>
+                  <th>SIREN/SIRET</th>
                   <th>Ville</th>
                   <th>Action</th>
                 </tr>
@@ -1955,6 +2597,8 @@ export default function Dashboard({
                     <td>{c.societe}</td>
                     <td>{c.email}</td>
                     <td>{c.telephone}</td>
+                    <td>{c.typeClient}</td>
+                    <td>{c.sirenClient || c.siretClient || "-"}</td>
                     <td>{c.ville}</td>
                     <td>
                       <button onClick={() => supprimerClient(c.id)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
@@ -2093,6 +2737,29 @@ export default function Dashboard({
                   {editingDevis ? "Modifier le devis" : "Créer un devis"}
                 </h2>
 
+                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                  <h3 className="text-xl font-bold">Modèles métier</h3>
+                  <p className="mt-2 text-sm text-slate-400">
+                    Démarre avec une structure simple, puis ajuste les lignes et
+                    conditions au client.
+                  </p>
+                  <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+                    {DEVIS_TEMPLATES.map((template) => (
+                      <button
+                        key={template.name}
+                        type="button"
+                        onClick={() => appliquerModele(template)}
+                        className="rounded-xl border border-slate-700 bg-slate-900 p-4 text-left hover:border-slate-500"
+                      >
+                        <p className="font-semibold text-white">{template.name}</p>
+                        <p className="mt-2 text-xs text-slate-400">
+                          {template.description}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {clients.length > 0 && (
                   <div className="mt-6">
                     <label className="block">
@@ -2116,6 +2783,49 @@ export default function Dashboard({
                   <Input label="Téléphone" value={telephone} onChange={setTelephone} />
                   <Input label="Échéance" value={echeance} onChange={setEcheance} />
                   <Input label="Port HT" type="number" value={String(portHT)} onChange={(v) => setPortHT(Number(v))} />
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                  <h3 className="text-xl font-bold">Fondations e-facture</h3>
+                  <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <SelectInput
+                      label="Type client"
+                      value={typeClient}
+                      options={TYPE_CLIENT_OPTIONS}
+                      onChange={setTypeClient}
+                    />
+                    <Input label="SIREN client" value={sirenClient} onChange={setSirenClient} />
+                    <Input label="SIRET client" value={siretClient} onChange={setSiretClient} />
+                    <Input label="TVA intracom client" value={tvaIntracomClient} onChange={setTvaIntracomClient} />
+                    <Input label="Pays client" value={paysClient} onChange={setPaysClient} />
+                    <SelectInput
+                      label="Catégorie opération"
+                      value={categorieOperation}
+                      options={CATEGORIE_OPERATION_OPTIONS}
+                      onChange={setCategorieOperation}
+                    />
+                  </div>
+                  <div className="mt-4">
+                    <Input
+                      label="Adresse complète client"
+                      value={adresseCompleteClient}
+                      onChange={setAdresseCompleteClient}
+                    />
+                  </div>
+                  <p className="mt-3 text-sm text-slate-500">
+                    Statut e-facture : {statutEFactureLabel("non_transmise")}
+                  </p>
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                  <Textarea
+                    label="Conditions du devis"
+                    value={conditionsDevis}
+                    onChange={setConditionsDevis}
+                  />
+                  <p className="mt-2 text-xs text-slate-500">
+                    Ces conditions sont affichées sur le PDF et sur la page client.
+                  </p>
                 </div>
 
                 <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
@@ -2255,6 +2965,7 @@ export default function Dashboard({
                     <th>Client</th>
                     <th>Montant HT</th>
                     <th>Statut</th>
+                    <th>Suivi</th>
                     <th>Actions</th>
                   </tr>
                 </thead>
@@ -2266,6 +2977,39 @@ export default function Dashboard({
                       <td>{d.client}</td>
                       <td>{totalHT(d.lignes, d.portHT).toFixed(2)} €</td>
                       <td>{d.statutAffiche}</td>
+                      <td className="min-w-[260px] py-3">
+                        <p className="text-sm font-semibold text-white">
+                          {pipelineStage(d)}
+                        </p>
+                        <div className="mt-2 grid gap-1">
+                          {timelineSteps(d).map((step) => (
+                            <div
+                              key={step.label}
+                              className="flex items-start gap-2 text-xs text-slate-400"
+                            >
+                              <span
+                                className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                                  step.done ? "bg-emerald-400" : "bg-slate-700"
+                                }`}
+                              />
+                              <span>
+                                <span
+                                  className={
+                                    step.done ? "text-slate-200" : "text-slate-500"
+                                  }
+                                >
+                                  {step.label}
+                                </span>
+                                {step.detail && (
+                                  <span className="ml-1 text-slate-500">
+                                    {step.detail}
+                                  </span>
+                                )}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </td>
                       <td className="flex flex-wrap gap-2 py-3">
                         {d.statutAffiche === "Brouillon" && (
                           <button onClick={() => marquerEnvoye(d)} className="rounded-lg border border-slate-700 px-3 py-2">
@@ -2306,6 +3050,15 @@ export default function Dashboard({
                         <button onClick={() => telechargerPDF(d)} className="rounded-lg border border-slate-700 px-3 py-2">
                           PDF
                         </button>
+
+                        {(d.statut === "Accepté" || d.signataireNom) && (
+                          <button
+                            onClick={() => telechargerPreuveAcceptationPDF(d)}
+                            className="rounded-lg border border-emerald-500 px-3 py-2 text-emerald-300"
+                          >
+                            Preuve
+                          </button>
+                        )}
 
                         <button onClick={() => modifierDevis(d)} className="rounded-lg border border-slate-700 px-3 py-2">
                           Modifier
@@ -2513,43 +3266,6 @@ function PipelineColumn({
   );
 }
 
-function FacturesPipelineColumn({ factures }: { factures: Facture[] }) {
-  const total = factures.reduce((sum, f) => sum + Number(f.totalHT || 0), 0);
-
-  return (
-    <div className="min-h-[280px] rounded-2xl border border-slate-800 bg-slate-950 p-4">
-      <div className="mb-4 flex items-center justify-between">
-        <h3 className="font-bold">Facturé</h3>
-        <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
-          {factures.length}
-        </span>
-      </div>
-
-      <p className="mb-4 text-sm text-slate-400">{total.toFixed(0)} € HT</p>
-
-      <div className="space-y-3">
-        {factures.length === 0 && (
-          <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
-            Aucune facture
-          </p>
-        )}
-
-        {factures.map((f) => (
-          <div key={f.id || f.numero} className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <p className="font-semibold">{f.numero}</p>
-            <p className="mt-1 text-sm text-slate-400">{f.client || "Client inconnu"}</p>
-            <p className="mt-2 text-sm font-bold text-green-300">
-              {Number(f.totalHT || 0).toFixed(2)} €
-            </p>
-            <p className="mt-1 text-xs text-slate-500">{f.statut}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-
 function Card({ title, value }: { title: string; value: string | number }) {
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
@@ -2596,6 +3312,35 @@ function Input({
         onChange={(e) => onChange(e.target.value)}
         className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-white"
       />
+    </label>
+  );
+}
+
+function SelectInput<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (value: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <label className="block">
+      <span className="text-sm text-slate-300">{label}</span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value as T)}
+        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-white"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }

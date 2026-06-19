@@ -201,6 +201,18 @@ export async function POST(request: Request) {
       );
     }
 
+    if (delivery.sentToOriginalRecipient) {
+      const { error: updateError } = await supabaseAdmin
+        .from("factures")
+        .update({ date_envoi: new Date().toISOString() })
+        .eq("id", facture.id)
+        .eq("user_id", auth.user.id);
+
+      if (updateError) {
+        console.error("Erreur mise à jour date envoi facture:", updateError);
+      }
+    }
+
     return NextResponse.json({
       success: true,
       data: delivery.data,

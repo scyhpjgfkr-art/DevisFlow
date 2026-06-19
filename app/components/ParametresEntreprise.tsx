@@ -1,3 +1,7 @@
+"use client";
+
+import { useEffect, useState } from "react";
+
 type Settings = {
   nom: string;
   adresse: string;
@@ -16,14 +20,17 @@ export default function ParametresEntreprise({
   setSettings,
   sauvegarderSettings,
   onLogoUpload,
+  onLogoRemove,
   logoUploading,
 }: {
   settings: Settings;
   setSettings: (s: Settings) => void;
   sauvegarderSettings: () => void;
   onLogoUpload: (file: File) => Promise<void>;
+  onLogoRemove: () => Promise<void>;
   logoUploading: boolean;
 }) {
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState("");
   const initials = (settings.nom || "DF")
     .split(/\s+/)
     .slice(0, 2)
@@ -34,6 +41,13 @@ export default function ParametresEntreprise({
   const couleur = /^#[0-9a-fA-F]{6}$/.test(settings.couleurPrincipale)
     ? settings.couleurPrincipale
     : "#0f172a";
+  const displayedLogoUrl = logoPreviewUrl || settings.logoUrl;
+
+  useEffect(() => {
+    if (!logoPreviewUrl) return;
+
+    return () => URL.revokeObjectURL(logoPreviewUrl);
+  }, [logoPreviewUrl]);
 
   const fields: Array<{
     key: keyof Settings;
@@ -75,10 +89,10 @@ export default function ParametresEntreprise({
         <div>
           <p className="text-sm font-medium text-slate-300">Logo entreprise</p>
           <div className="mt-3 flex h-28 w-28 items-center justify-center overflow-hidden rounded-2xl border border-slate-700 bg-slate-900">
-            {settings.logoUrl ? (
+            {displayedLogoUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
-                src={settings.logoUrl}
+                src={displayedLogoUrl}
                 alt="Logo entreprise"
                 className="h-full w-full object-contain p-3"
               />
@@ -104,7 +118,11 @@ export default function ParametresEntreprise({
               disabled={logoUploading}
               onChange={(event) => {
                 const file = event.target.files?.[0];
-                if (file) void onLogoUpload(file);
+                if (file) {
+                  const nextPreviewUrl = URL.createObjectURL(file);
+                  setLogoPreviewUrl(nextPreviewUrl);
+                  void onLogoUpload(file).finally(() => setLogoPreviewUrl(""));
+                }
                 event.currentTarget.value = "";
               }}
               className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-300 file:mr-4 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:font-semibold file:text-slate-950 disabled:opacity-50"
@@ -147,7 +165,10 @@ export default function ParametresEntreprise({
           {settings.logoUrl && (
             <button
               type="button"
-              onClick={() => setSettings({ ...settings, logoUrl: "" })}
+              onClick={() => {
+                setLogoPreviewUrl("");
+                void onLogoRemove();
+              }}
               className="w-fit rounded-xl border border-slate-700 px-4 py-3 text-sm text-slate-300 hover:bg-slate-900"
             >
               Retirer le logo

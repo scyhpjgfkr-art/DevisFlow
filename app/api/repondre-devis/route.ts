@@ -13,6 +13,18 @@ type RepondreDevisPayload = {
   commentaire?: string;
 };
 
+function getClientIp(request: Request) {
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  const firstForwardedIp = forwardedFor?.split(",")[0]?.trim();
+
+  return (
+    firstForwardedIp ||
+    request.headers.get("x-real-ip") ||
+    request.headers.get("cf-connecting-ip") ||
+    ""
+  );
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as RepondreDevisPayload;
@@ -81,24 +93,46 @@ export async function POST(request: Request) {
 
     const now = new Date().toISOString();
     const statutFinal = statut as StatutReponse;
+    const ip = getClientIp(request);
+    const updatePayload = {
+      statut: statutFinal,
+      signataire_nom: signataireNom,
+      commentaire_client: commentaire,
+      date_reponse: now,
+      date_acceptation: statutFinal === "Accepté" ? now : null,
+      date_refus: statutFinal === "Refusé" ? now : null,
+      response_locked_at: now,
+    };
 
-    const { data, error } = await supabaseAdmin
+    let updateResult = await supabaseAdmin
       .from("devis")
       .update({
-        statut: statutFinal,
-        signataire_nom: signataireNom,
-        commentaire_client: commentaire,
-        date_reponse: now,
-        date_acceptation: statutFinal === "Accepté" ? now : null,
-        date_refus: statutFinal === "Refusé" ? now : null,
-        response_locked_at: now,
+        ...updatePayload,
+        ip_reponse: ip || null,
       })
       .eq("id", devisExistant.id)
       .is("response_locked_at", null)
       .select(
-        "id, statut, signataire_nom, commentaire_client, date_reponse, date_acceptation, date_refus, response_locked_at"
+        "id, statut, signataire_nom, commentaire_client, date_reponse, date_acceptation, date_refus, response_locked_at, ip_reponse"
       )
       .maybeSingle();
+
+    if (
+      updateResult.error &&
+      updateResult.error.message.toLowerCase().includes("ip_reponse")
+    ) {
+      updateResult = await supabaseAdmin
+        .from("devis")
+        .update(updatePayload)
+        .eq("id", devisExistant.id)
+        .is("response_locked_at", null)
+        .select(
+          "id, statut, signataire_nom, commentaire_client, date_reponse, date_acceptation, date_refus, response_locked_at"
+        )
+        .maybeSingle();
+    }
+
+    const { data, error } = updateResult;
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
