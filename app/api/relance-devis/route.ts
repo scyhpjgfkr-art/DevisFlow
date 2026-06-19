@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 import { NextResponse } from "next/server";
+import { getResendFromEmail, sendTransactionalEmail } from "@/lib/email-delivery";
 import { buildPremiumDocumentEmail } from "@/lib/email-templates";
 import { getErrorMessage, requireSupabaseUser } from "@/lib/server-utils";
 
@@ -39,8 +40,6 @@ export async function POST(request: Request) {
     }
 
     const resend = new Resend(resendApiKey);
-    const fromEmail =
-      process.env.RESEND_FROM_EMAIL || "DevisFlow <onboarding@resend.dev>";
     const body = (await request.json()) as RelancePayload;
 
     const { client, email, numero, totalHT, totalTTC, entreprise, acceptUrl } =
@@ -53,8 +52,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const { data, error } = await resend.emails.send({
-      from: fromEmail,
+    const delivery = await sendTransactionalEmail(resend, {
+      from: getResendFromEmail(),
       to: email,
       subject: `Relance concernant votre devis ${numero || ""}`,
       html: buildPremiumDocumentEmail({
@@ -71,13 +70,22 @@ export async function POST(request: Request) {
         ctaUrl: acceptUrl,
         note: "Ce rappel est envoyé pour faciliter votre prise de décision.",
       }),
-    });
+    }, "relance-devis");
 
-    if (error) {
-      return NextResponse.json({ error }, { status: 500 });
+    if (!delivery.success) {
+      return NextResponse.json(
+        { error: delivery.error, details: delivery.details },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({ success: true, data });
+    return NextResponse.json({
+      success: true,
+      data: delivery.data,
+      testFallback: delivery.testFallback,
+      sentToOriginalRecipient: delivery.sentToOriginalRecipient,
+      warning: delivery.warning,
+    });
   } catch (error: unknown) {
     return NextResponse.json(
       { error: getErrorMessage(error, "Erreur serveur relance") },

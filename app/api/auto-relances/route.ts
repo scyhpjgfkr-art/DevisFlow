@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
+import { getResendFromEmail, sendTransactionalEmail } from "@/lib/email-delivery";
 import { buildPremiumDocumentEmail } from "@/lib/email-templates";
 import { getErrorMessage } from "@/lib/server-utils";
 
@@ -25,6 +26,8 @@ type RelanceResult = {
   devis: string | null;
   success: boolean;
   error?: unknown;
+  warning?: string;
+  sentToOriginalRecipient?: boolean;
 };
 
 type EntrepriseSettings = {
@@ -68,8 +71,6 @@ export async function GET(request: Request) {
 
     const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
     const resend = new Resend(resendApiKey);
-    const fromEmail =
-      process.env.RESEND_FROM_EMAIL || "DevisFlow <onboarding@resend.dev>";
 
     const now = new Date();
     const threeDaysAgo = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
@@ -119,8 +120,8 @@ export async function GET(request: Request) {
         .eq("user_id", d.user_id)
         .maybeSingle<EntrepriseSettings>();
 
-      const { error: emailError } = await resend.emails.send({
-        from: fromEmail,
+      const delivery = await sendTransactionalEmail(resend, {
+        from: getResendFromEmail(),
         to: d.email,
         subject: `Relance concernant votre devis ${d.numero || ""}`,
         html: buildPremiumDocumentEmail({
@@ -148,14 +149,23 @@ export async function GET(request: Request) {
           ctaUrl: acceptUrl,
           note: "Ce rappel est automatique et sécurisé.",
         }),
-      });
+      }, "auto-relances");
 
-      if (emailError) {
-        console.error("Erreur email relance:", emailError);
+      if (!delivery.success) {
         results.push({
           devis: d.numero,
           success: false,
-          error: emailError,
+          error: delivery.error,
+        });
+        continue;
+      }
+
+      if (!delivery.sentToOriginalRecipient) {
+        results.push({
+          devis: d.numero,
+          success: true,
+          warning: delivery.warning,
+          sentToOriginalRecipient: false,
         });
         continue;
       }
@@ -181,13 +191,18 @@ export async function GET(request: Request) {
       results.push({
         devis: d.numero,
         success: true,
+        sentToOriginalRecipient: true,
       });
     }
 
     return NextResponse.json({
       success: true,
       checked: devis?.length || 0,
-      sent: results.filter((r) => r.success).length,
+      sent: results.filter((r) => r.success && r.sentToOriginalRecipient !== false)
+        .length,
+      testFallbacks: results.filter(
+        (r) => r.success && r.sentToOriginalRecipient === false
+      ).length,
       results,
     });
   } catch (error: unknown) {

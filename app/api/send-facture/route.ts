@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { Resend } from "resend";
 import Stripe from "stripe";
+import { getResendFromEmail, sendTransactionalEmail } from "@/lib/email-delivery";
 import { buildPremiumDocumentEmail } from "@/lib/email-templates";
 import { getErrorMessage, requireSupabaseUser } from "@/lib/server-utils";
 
@@ -151,11 +152,9 @@ export async function POST(request: Request) {
     }
 
     const resend = new Resend(resendApiKey);
-    const fromEmail =
-      process.env.RESEND_FROM_EMAIL || "DevisFlow <onboarding@resend.dev>";
 
-    const { data, error } = await resend.emails.send({
-      from: fromEmail,
+    const delivery = await sendTransactionalEmail(resend, {
+      from: getResendFromEmail(),
       to: facture.email,
       subject: `Votre facture ${facture.numero || ""}`,
       html: buildPremiumDocumentEmail({
@@ -193,13 +192,23 @@ export async function POST(request: Request) {
           ? "Le paiement est traité par Stripe sur une page sécurisée."
           : "Vous pouvez répondre à cet email pour toute question concernant le règlement.",
       }),
-    });
+    }, "send-facture");
 
-    if (error) {
-      return NextResponse.json({ error }, { status: 500 });
+    if (!delivery.success) {
+      return NextResponse.json(
+        { error: delivery.error, details: delivery.details },
+        { status: 500 }
+      );
     }
 
-    return NextResponse.json({ success: true, data, paymentUrlCreated: Boolean(paymentUrl) });
+    return NextResponse.json({
+      success: true,
+      data: delivery.data,
+      paymentUrlCreated: Boolean(paymentUrl),
+      testFallback: delivery.testFallback,
+      sentToOriginalRecipient: delivery.sentToOriginalRecipient,
+      warning: delivery.warning,
+    });
   } catch (error: unknown) {
     console.error("Erreur envoi facture:", error);
 

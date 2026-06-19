@@ -114,6 +114,7 @@ type ProduitRow = {
 };
 
 type LigneFactureRow = {
+  facture_id?: string | null;
   reference?: string | null;
   designation?: string | null;
   quantite?: number | null;
@@ -138,9 +139,14 @@ type FactureRow = {
 type SendFactureResponse = {
   success?: boolean;
   error?: string;
+  details?: string;
+  warning?: string;
+  testFallback?: boolean;
+  sentToOriginalRecipient?: boolean;
 };
 
 type LigneDevisRow = {
+  devis_id?: string | null;
   reference?: string | null;
   designation?: string | null;
   quantite?: number | null;
@@ -283,6 +289,41 @@ function drawPdfBrandMark(
 
 function formatEuro(value: number) {
   return `${value.toFixed(2)} €`;
+}
+
+async function readApiResponse(response: Response): Promise<SendFactureResponse> {
+  try {
+    return (await response.json()) as SendFactureResponse;
+  } catch {
+    return {
+      error: response.ok
+        ? undefined
+        : `Erreur HTTP ${response.status} ${response.statusText}`.trim(),
+    };
+  }
+}
+
+function apiErrorMessage(data: SendFactureResponse, fallback: string) {
+  if (data.details && data.error) return `${data.error}\n\nDétail : ${data.details}`;
+  return data.error || fallback;
+}
+
+function mapLigneDevis(ligne: LigneDevisRow): LigneDevis {
+  return {
+    reference: ligne.reference || "",
+    designation: ligne.designation || "",
+    quantite: Number(ligne.quantite || 1),
+    prixUnitaire: Number(ligne.prix_unitaire || 0),
+  };
+}
+
+function mapLigneFacture(ligne: LigneFactureRow): FactureLigne {
+  return {
+    reference: ligne.reference || "",
+    designation: ligne.designation || "",
+    quantite: Number(ligne.quantite || 1),
+    prixUnitaire: Number(ligne.prix_unitaire || 0),
+  };
 }
 
 export default function Dashboard({
@@ -605,27 +646,52 @@ export default function Dashboard({
       return;
     }
 
+    const facturesRows = (data as FactureRow[] | null) || [];
+    const factureIds = facturesRows
+      .map((f) => f.id)
+      .filter((id): id is string => Boolean(id));
+    const lignesParFacture = new Map<string, LigneFactureRow[]>();
+
+    if (factureIds.length > 0) {
+      const { data: lignesData, error: lignesError } = await supabase
+        .from("lignes_factures")
+        .select("*")
+        .in("facture_id", factureIds);
+
+      if (lignesError) {
+        console.warn("Lignes factures indisponibles:", lignesError);
+      } else {
+        ((lignesData as LigneFactureRow[] | null) || []).forEach((ligne) => {
+          if (!ligne.facture_id) return;
+          const lignes = lignesParFacture.get(ligne.facture_id) || [];
+          lignes.push(ligne);
+          lignesParFacture.set(ligne.facture_id, lignes);
+        });
+      }
+    }
+
     setFactures(
-      ((data as FactureRow[] | null) || []).map((f) => ({
-        id: f.id,
-        devisId: f.devis_id || undefined,
-        numero: f.numero || "",
-        client: f.client || "",
-        societe: f.societe || "",
-        email: f.email || "",
-        telephone: f.telephone || "",
-        totalHT: Number(f.total_ht || 0),
-        totalTTC: Number(f.total_ttc || 0),
-        dateCreation: f.date_creation || new Date().toISOString(),
-        statut: f.statut || "À payer",
-        lignes:
-          f.lignes_factures?.map((l) => ({
-            reference: l.reference || "",
-            designation: l.designation || "",
-            quantite: Number(l.quantite || 1),
-            prixUnitaire: Number(l.prix_unitaire || 0),
-          })) || [],
-      }))
+      facturesRows.map((f) => {
+        const lignesSource =
+          (f.id && lignesParFacture.get(f.id)?.length
+            ? lignesParFacture.get(f.id)
+            : f.lignes_factures) || [];
+
+        return {
+          id: f.id,
+          devisId: f.devis_id || undefined,
+          numero: f.numero || "",
+          client: f.client || "",
+          societe: f.societe || "",
+          email: f.email || "",
+          telephone: f.telephone || "",
+          totalHT: Number(f.total_ht || 0),
+          totalTTC: Number(f.total_ttc || 0),
+          dateCreation: f.date_creation || new Date().toISOString(),
+          statut: f.statut || "À payer",
+          lignes: lignesSource.map(mapLigneFacture),
+        };
+      })
     );
   }
 
@@ -839,35 +905,61 @@ export default function Dashboard({
       return;
     }
 
+    const devisRows = (data as DevisRow[] | null) || [];
+    const devisIds = devisRows
+      .map((d) => d.id)
+      .filter((id): id is string => Boolean(id));
+    const lignesParDevis = new Map<string, LigneDevisRow[]>();
+
+    if (devisIds.length > 0) {
+      const { data: lignesData, error: lignesError } = await supabase
+        .from("lignes_devis")
+        .select("*")
+        .in("devis_id", devisIds);
+
+      if (lignesError) {
+        console.warn("Lignes devis indisponibles:", lignesError);
+      } else {
+        ((lignesData as LigneDevisRow[] | null) || []).forEach((ligne) => {
+          if (!ligne.devis_id) return;
+          const lignes = lignesParDevis.get(ligne.devis_id) || [];
+          lignes.push(ligne);
+          lignesParDevis.set(ligne.devis_id, lignes);
+        });
+      }
+    }
+
     setDevis(
-      ((data as DevisRow[] | null) || []).map((d) => ({
-        id: d.id,
-        numero: d.numero || "",
-        client: d.client || "",
-        societe: d.societe || "",
-        email: d.email || "",
-        telephone: d.telephone || "",
-        echeance: d.echeance || "À réception de facture",
-        portHT: Number(d.port_ht || 0),
-        statut: d.statut || "Brouillon",
-        dateCreation: d.date_creation || new Date().toISOString(),
-        dateEnvoi: d.date_envoi || undefined,
-        derniereRelance: d.derniere_relance || undefined,
-        publicToken: d.public_token || undefined,
-        acompteType: d.acompte_type || "none",
-        acompteMontant: Number(d.acompte_montant || 0),
-        acomptePourcentage: Number(d.acompte_pourcentage || 0),
-        acompteStatut: d.acompte_statut || undefined,
-        signataireNom: d.signataire_nom || undefined,
-        dateAcceptation: d.date_acceptation || undefined,
-        responseLockedAt: d.response_locked_at || undefined,
-        lignes: (d.lignes_devis || []).map((l) => ({
-          reference: l.reference || "",
-          designation: l.designation || "",
-          quantite: Number(l.quantite || 1),
-          prixUnitaire: Number(l.prix_unitaire || 0),
-        })),
-      }))
+      devisRows.map((d) => {
+        const lignesSource =
+          (d.id && lignesParDevis.get(d.id)?.length
+            ? lignesParDevis.get(d.id)
+            : d.lignes_devis) || [];
+
+        return {
+          id: d.id,
+          numero: d.numero || "",
+          client: d.client || "",
+          societe: d.societe || "",
+          email: d.email || "",
+          telephone: d.telephone || "",
+          echeance: d.echeance || "À réception de facture",
+          portHT: Number(d.port_ht || 0),
+          statut: d.statut || "Brouillon",
+          dateCreation: d.date_creation || new Date().toISOString(),
+          dateEnvoi: d.date_envoi || undefined,
+          derniereRelance: d.derniere_relance || undefined,
+          publicToken: d.public_token || undefined,
+          acompteType: d.acompte_type || "none",
+          acompteMontant: Number(d.acompte_montant || 0),
+          acomptePourcentage: Number(d.acompte_pourcentage || 0),
+          acompteStatut: d.acompte_statut || undefined,
+          signataireNom: d.signataire_nom || undefined,
+          dateAcceptation: d.date_acceptation || undefined,
+          responseLockedAt: d.response_locked_at || undefined,
+          lignes: lignesSource.map(mapLigneDevis),
+        };
+      })
     );
   }
 
@@ -1235,11 +1327,16 @@ export default function Dashboard({
     });
 
     setRelanceSendingId(null);
+    const data = await readApiResponse(response);
 
     if (!response.ok) {
-      const error = await response.json();
-      console.error(error);
-      alert(error?.error || "Erreur lors de la relance email.");
+      console.error(data);
+      alert(apiErrorMessage(data, "Erreur lors de la relance email."));
+      return;
+    }
+
+    if (data.testFallback && !data.sentToOriginalRecipient) {
+      alert(data.warning || "Email redirigé vers l'adresse de test Resend.");
       return;
     }
 
@@ -1283,11 +1380,16 @@ export default function Dashboard({
     });
 
     setSendingId(null);
+    const data = await readApiResponse(response);
 
     if (!response.ok) {
-      const error = await response.json();
-      console.error(error);
-      alert("Erreur lors de l'envoi de l'email.");
+      console.error(data);
+      alert(apiErrorMessage(data, "Erreur lors de l'envoi de l'email."));
+      return;
+    }
+
+    if (data.testFallback && !data.sentToOriginalRecipient) {
+      alert(data.warning || "Email redirigé vers l'adresse de test Resend.");
       return;
     }
 
@@ -1323,11 +1425,16 @@ export default function Dashboard({
 
     setFactureSendingId(null);
 
-    const data = (await response.json()) as SendFactureResponse;
+    const data = await readApiResponse(response);
 
     if (!response.ok) {
       console.error(data);
-      alert(data?.error || "Erreur lors de l'envoi de la facture.");
+      alert(apiErrorMessage(data, "Erreur lors de l'envoi de la facture."));
+      return;
+    }
+
+    if (data.testFallback && !data.sentToOriginalRecipient) {
+      alert(data.warning || "Email redirigé vers l'adresse de test Resend.");
       return;
     }
 
