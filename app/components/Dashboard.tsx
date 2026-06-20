@@ -1,10 +1,28 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { supabase } from "@/lib/supabase";
+import {
+  COMMERCIAL_MEMORY_FIELDS,
+  buildCommercialMemoryCatalog,
+  buildCommercialMemoryClients,
+  buildCommercialMemoryPreview,
+  detectCommercialMemoryMapping,
+  mapCommercialMemoryLineRow,
+  rowsFromCommercialMemoryFile,
+  suggestPriceForLine,
+  type CommercialMemoryCatalogItem,
+  type CommercialMemoryClientItem,
+  type CommercialMemoryImportRow,
+  type CommercialMemoryLine,
+  type CommercialMemoryMapping,
+  type CommercialMemoryPreviewRow,
+  type CommercialMemoryReport,
+  type PriceSuggestion,
+} from "@/lib/commercial-memory";
 import ParametresEntreprise from "./ParametresEntreprise";
 import OnboardingPremiersPas from "./OnboardingPremiersPas";
 
@@ -320,6 +338,7 @@ type Onglet =
   | "clients"
   | "catalogue"
   | "importExport"
+  | "memoire"
   | "relances"
   | "parametres"
   | "entreprise"
@@ -378,6 +397,13 @@ type ImportReport = {
   ignored: number;
   errors: string[];
 };
+
+type CommercialMemoryTab =
+  | "historique"
+  | "catalogue"
+  | "clients"
+  | "suggestions";
+type CommercialMemoryImportStep = "idle" | "mapping" | "preview" | "result";
 
 type AutoTableDoc = jsPDF & {
   lastAutoTable?: {
@@ -1113,6 +1139,26 @@ export default function Dashboard({
   const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
   const [importMessage, setImportMessage] = useState("");
+  const [commercialMemoryTab, setCommercialMemoryTab] =
+    useState<CommercialMemoryTab>("historique");
+  const [commercialMemoryLines, setCommercialMemoryLines] = useState<
+    CommercialMemoryLine[]
+  >([]);
+  const [commercialMemoryStep, setCommercialMemoryStep] =
+    useState<CommercialMemoryImportStep>("idle");
+  const [commercialMemoryFileName, setCommercialMemoryFileName] = useState("");
+  const [commercialMemoryHeaders, setCommercialMemoryHeaders] = useState<string[]>([]);
+  const [commercialMemoryRows, setCommercialMemoryRows] = useState<
+    CommercialMemoryImportRow[]
+  >([]);
+  const [commercialMemoryMapping, setCommercialMemoryMapping] =
+    useState<CommercialMemoryMapping>({});
+  const [commercialMemoryPreview, setCommercialMemoryPreview] = useState<
+    CommercialMemoryPreviewRow[]
+  >([]);
+  const [commercialMemoryReport, setCommercialMemoryReport] =
+    useState<CommercialMemoryReport | null>(null);
+  const [commercialMemoryMessage, setCommercialMemoryMessage] = useState("");
   const [relanceSettings, setRelanceSettings] = useState<RelanceSettings>(
     DEFAULT_RELANCE_SETTINGS
   );
@@ -1211,6 +1257,7 @@ export default function Dashboard({
         chargerClients(),
         chargerProduits(),
         chargerFactures(),
+        chargerMemoireCommerciale(),
         chargerRelanceSettings(),
         chargerRelanceHistory(),
       ]);
@@ -1608,6 +1655,157 @@ export default function Dashboard({
       errors: importPreview.flatMap((row) => row.errors),
     });
     setImportStep("result");
+  }
+
+  async function chargerMemoireCommerciale() {
+    const { data, error } = await supabase
+      .from("historique_lignes")
+      .select("*")
+      .order("document_date", { ascending: false })
+      .limit(5000);
+
+    if (error) {
+      console.warn(
+        "Mémoire commerciale indisponible. Applique le SQL du sprint si la section doit être activée:",
+        error.message
+      );
+      return;
+    }
+
+    setCommercialMemoryLines(
+      ((data as Record<string, unknown>[] | null) || []).map(
+        mapCommercialMemoryLineRow
+      )
+    );
+  }
+
+  function resetCommercialMemoryImport() {
+    setCommercialMemoryStep("idle");
+    setCommercialMemoryFileName("");
+    setCommercialMemoryHeaders([]);
+    setCommercialMemoryRows([]);
+    setCommercialMemoryMapping({});
+    setCommercialMemoryPreview([]);
+    setCommercialMemoryReport(null);
+    setCommercialMemoryMessage("");
+  }
+
+  async function chargerFichierMemoireCommerciale(file: File) {
+    setCommercialMemoryMessage("");
+    setCommercialMemoryReport(null);
+
+    try {
+      const { headers, rows } = await rowsFromCommercialMemoryFile(file);
+
+      if (headers.length === 0 || rows.length === 0) {
+        setCommercialMemoryMessage(
+          "Le fichier ne contient pas d'en-têtes ou de lignes exploitables."
+        );
+        return;
+      }
+
+      setCommercialMemoryFileName(file.name);
+      setCommercialMemoryHeaders(headers);
+      setCommercialMemoryRows(rows);
+      setCommercialMemoryMapping(detectCommercialMemoryMapping(headers));
+      setCommercialMemoryPreview([]);
+      setCommercialMemoryStep("mapping");
+    } catch (error) {
+      setCommercialMemoryMessage(
+        error instanceof Error ? error.message : "Impossible de lire ce fichier."
+      );
+    }
+  }
+
+  function preparerApercuMemoireCommerciale() {
+    const preview = buildCommercialMemoryPreview(
+      commercialMemoryRows,
+      commercialMemoryMapping,
+      commercialMemoryLines
+    );
+
+    setCommercialMemoryPreview(preview);
+    setCommercialMemoryStep("preview");
+  }
+
+  async function lancerImportMemoireCommerciale() {
+    const importables = commercialMemoryPreview.filter(
+      (row) => row.valid && !row.duplicate
+    );
+    const errors = commercialMemoryPreview.flatMap((row) =>
+      row.errors.map((error) => `Ligne ${row.rowNumber}: ${error}`)
+    );
+
+    if (importables.length === 0) {
+      setCommercialMemoryReport({
+        imported: 0,
+        ignored: commercialMemoryPreview.length,
+        errors: errors.length > 0 ? errors : ["Aucune ligne valide à importer."],
+      });
+      setCommercialMemoryStep("result");
+      return;
+    }
+
+    const extension = commercialMemoryFileName.split(".").pop()?.toLowerCase();
+    const sourceType = extension === "xlsx" ? "xlsx" : "csv";
+    const { data: importData, error: importError } = await supabase
+      .from("historique_imports")
+      .insert({
+        user_id: session.user.id,
+        fichier_nom: commercialMemoryFileName || "historique-commercial",
+        source_type: sourceType,
+        statut: "termine",
+        lignes_total: commercialMemoryPreview.length,
+        lignes_importees: importables.length,
+        lignes_ignorees: commercialMemoryPreview.length - importables.length,
+        erreurs: errors,
+      })
+      .select()
+      .single();
+
+    if (importError) {
+      setCommercialMemoryReport({
+        imported: 0,
+        ignored: commercialMemoryPreview.length,
+        errors: [
+          `${importError.message}. Vérifie que le SQL Mémoire Commerciale a été appliqué.`,
+        ],
+      });
+      setCommercialMemoryStep("result");
+      return;
+    }
+
+    const importRecord = importData as { id?: string } | null;
+    const rowsToInsert = importables.map((row) => ({
+      user_id: session.user.id,
+      import_id: importRecord?.id,
+      ...row.payload,
+    }));
+
+    for (let index = 0; index < rowsToInsert.length; index += 500) {
+      const chunk = rowsToInsert.slice(index, index + 500);
+      const { error } = await supabase.from("historique_lignes").insert(chunk);
+
+      if (error) {
+        setCommercialMemoryReport({
+          imported: index,
+          ignored: commercialMemoryPreview.length - index,
+          errors: [error.message],
+        });
+        setCommercialMemoryStep("result");
+        await chargerMemoireCommerciale();
+        return;
+      }
+    }
+
+    await chargerMemoireCommerciale();
+
+    setCommercialMemoryReport({
+      imported: importables.length,
+      ignored: commercialMemoryPreview.length - importables.length,
+      errors,
+    });
+    setCommercialMemoryStep("result");
   }
 
   function exporterClients() {
@@ -2244,6 +2442,17 @@ export default function Dashboard({
     };
 
     setLignes(copy);
+  }
+
+  function suggestionPrixPourLigne(ligne: LigneDevis) {
+    return suggestPriceForLine(
+      {
+        reference: ligne.reference,
+        designation: ligne.designation,
+        quantite: Number(ligne.quantite || 1),
+      },
+      commercialMemoryLines
+    );
   }
 
   function appliquerModele(template: DevisTemplate) {
@@ -2963,6 +3172,23 @@ export default function Dashboard({
   );
   const facturesEnvoyees = factures.filter((f) => Boolean(f.dateEnvoi));
   const facturesPayees = factures.filter((f) => f.statut === "Payée");
+  const catalogueMemoire = useMemo<CommercialMemoryCatalogItem[]>(
+    () => buildCommercialMemoryCatalog(commercialMemoryLines),
+    [commercialMemoryLines]
+  );
+  const clientsMemoire = useMemo<CommercialMemoryClientItem[]>(
+    () => buildCommercialMemoryClients(commercialMemoryLines),
+    [commercialMemoryLines]
+  );
+  const chiffreHistorique = commercialMemoryLines.reduce(
+    (sum, line) => sum + Number(line.montantHT || 0),
+    0
+  );
+  const dernierPrixHistorique = catalogueMemoire
+    .filter((item) => item.derniereDate)
+    .sort((a, b) => b.derniereDate.localeCompare(a.derniereDate))[0];
+  const produitsAvecPrix = catalogueMemoire.filter((item) => item.prixMedian > 0);
+  const suggestionsDisponibles = produitsAvecPrix.length;
   const devisParEtape = {
     "Envoyé": devisAvecStatutAuto.filter((d) => pipelineStage(d) === "Envoyé"),
     "Vu": devisAvecStatutAuto.filter((d) => pipelineStage(d) === "Vu"),
@@ -3042,6 +3268,7 @@ export default function Dashboard({
     { id: "clients", label: "Clients", description: "Base commerciale" },
     { id: "catalogue", label: "Catalogue", description: "Prestations" },
     { id: "importExport", label: "Import / Export", description: "CSV" },
+    { id: "memoire", label: "Mémoire commerciale", description: "Prix historiques" },
     { id: "relances", label: "Relances", description: "Automatiser" },
     { id: "parametres", label: "Paramètres", description: "Entreprise" },
     { id: "entreprise", label: "Mon entreprise", description: "Identité" },
@@ -3809,6 +4036,420 @@ export default function Dashboard({
           </section>
         )}
 
+        {onglet === "memoire" && (
+          <section className="mt-8 space-y-6">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#2563eb]">
+                    Mémoire commerciale
+                  </p>
+                  <h2 className="mt-2 text-2xl font-black text-white">
+                    Transformer l&apos;historique en aide au devis
+                  </h2>
+                  <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+                    Importe d&apos;anciennes factures, exports ou catalogues. DevisFlow
+                    reconstruit les clients, les produits et les prix observés sans
+                    inventer de montant : chaque suggestion reste justifiée par
+                    l&apos;historique.
+                  </p>
+                </div>
+
+                <label className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700">
+                  Importer CSV/XLSX
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void chargerFichierMemoireCommerciale(file);
+                      event.currentTarget.value = "";
+                    }}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-4">
+                <Insight title="Lignes historiques" value={commercialMemoryLines.length} />
+                <Insight title="Produits reconstruits" value={catalogueMemoire.length} />
+                <Insight title="Clients historiques" value={clientsMemoire.length} />
+                <Insight title="CA observé HT" value={`${chiffreHistorique.toFixed(0)} €`} />
+              </div>
+
+              {commercialMemoryMessage && (
+                <p className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                  {commercialMemoryMessage}
+                </p>
+              )}
+
+              <div className="mt-6 flex flex-wrap gap-2">
+                {[
+                  ["historique", "Historique"],
+                  ["catalogue", "Catalogue reconstruit"],
+                  ["clients", "Clients historiques"],
+                  ["suggestions", "Suggestions de prix"],
+                ].map(([id, label]) => (
+                  <button
+                    key={id}
+                    onClick={() => setCommercialMemoryTab(id as CommercialMemoryTab)}
+                    className={`rounded-xl px-4 py-2 text-sm font-semibold ${
+                      commercialMemoryTab === id
+                        ? "bg-blue-600 text-white"
+                        : "border border-slate-800 bg-slate-950/60 text-slate-300"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {commercialMemoryStep === "mapping" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">
+                      Mapper l&apos;historique
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {commercialMemoryFileName} · {commercialMemoryRows.length} lignes détectées
+                    </p>
+                  </div>
+                  <button
+                    onClick={preparerApercuMemoireCommerciale}
+                    className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white"
+                  >
+                    Suivant : aperçu
+                  </button>
+                </div>
+
+                <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  {COMMERCIAL_MEMORY_FIELDS.map((field) => (
+                    <label key={field.key} className="block">
+                      <span className="text-sm font-medium text-slate-200">
+                        {field.label}
+                        {field.required ? " *" : ""}
+                      </span>
+                      <select
+                        value={commercialMemoryMapping[field.key] || ""}
+                        onChange={(event) =>
+                          setCommercialMemoryMapping({
+                            ...commercialMemoryMapping,
+                            [field.key]: event.target.value,
+                          })
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm text-slate-200 outline-none focus:border-[#2563eb]"
+                      >
+                        <option value="">Ignorer</option>
+                        {commercialMemoryHeaders.map((header) => (
+                          <option key={header} value={header}>
+                            {header}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {commercialMemoryStep === "preview" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">
+                      Aperçu avant import historique
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {
+                        commercialMemoryPreview.filter(
+                          (row) => row.valid && !row.duplicate
+                        ).length
+                      } lignes prêtes,{" "}
+                      {commercialMemoryPreview.filter((row) => row.duplicate).length} doublons,{" "}
+                      {commercialMemoryPreview.filter((row) => !row.valid).length} erreurs.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={() => setCommercialMemoryStep("mapping")}
+                      className="rounded-xl border border-slate-800 px-5 py-3 text-sm font-semibold text-slate-200"
+                    >
+                      Retour mapping
+                    </button>
+                    <button
+                      onClick={lancerImportMemoireCommerciale}
+                      className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white"
+                    >
+                      Valider l&apos;import
+                    </button>
+                  </div>
+                </div>
+
+                <DataTable>
+                  <thead>
+                    <tr className="border-b border-slate-800 text-sm text-slate-400">
+                      <th className="py-3">Ligne</th>
+                      <th>Client</th>
+                      <th>Produit</th>
+                      <th>Prix observé</th>
+                      <th>Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {commercialMemoryPreview.slice(0, 12).map((row) => (
+                      <tr key={row.rowNumber} className="border-b border-slate-800/70">
+                        <td className="py-3 text-sm text-slate-400">{row.rowNumber}</td>
+                        <td>
+                          {String(
+                            row.payload.client_societe ||
+                              row.payload.client_nom ||
+                              "-"
+                          )}
+                        </td>
+                        <td className="max-w-md">
+                          <p className="font-medium text-white">
+                            {String(row.payload.produit_nom || row.payload.designation)}
+                          </p>
+                          <p className="mt-1 truncate text-xs text-slate-400">
+                            {String(row.payload.designation || "-")}
+                          </p>
+                        </td>
+                        <td>
+                          {row.payload.prix_unitaire_ht
+                            ? `${Number(row.payload.prix_unitaire_ht).toFixed(2)} € HT`
+                            : row.payload.montant_ht
+                            ? `${Number(row.payload.montant_ht).toFixed(2)} € HT`
+                            : "-"}
+                        </td>
+                        <td className="text-sm text-slate-300">
+                          {row.duplicate
+                            ? "Doublon"
+                            : row.valid
+                            ? "Importable"
+                            : row.errors.join(", ")}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              </div>
+            )}
+
+            {commercialMemoryStep === "result" && commercialMemoryReport && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <h3 className="text-xl font-bold text-white">Résultat mémoire commerciale</h3>
+                <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <Insight title="Lignes importées" value={commercialMemoryReport.imported} />
+                  <Insight title="Lignes ignorées" value={commercialMemoryReport.ignored} />
+                  <Insight title="Erreurs détectées" value={commercialMemoryReport.errors.length} />
+                </div>
+                {commercialMemoryReport.errors.length > 0 && (
+                  <div className="mt-6 rounded-xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+                    {commercialMemoryReport.errors.slice(0, 5).join(" · ")}
+                  </div>
+                )}
+                <button
+                  onClick={resetCommercialMemoryImport}
+                  className="mt-6 rounded-xl border border-slate-800 px-5 py-3 text-sm font-semibold text-slate-200"
+                >
+                  Nouvel import historique
+                </button>
+              </div>
+            )}
+
+            {commercialMemoryTab === "historique" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <h3 className="text-xl font-bold text-white">Historique importé</h3>
+                <p className="mt-2 text-sm text-slate-400">
+                  Chaque ligne reste une observation historique. Elle ne modifie pas
+                  automatiquement ton catalogue actif.
+                </p>
+
+                <DataTable>
+                  <thead>
+                    <tr className="border-b border-slate-800 text-sm text-slate-400">
+                      <th className="py-3">Date</th>
+                      <th>Client</th>
+                      <th>Produit</th>
+                      <th>Qté</th>
+                      <th>PU HT</th>
+                      <th>Montant HT</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {commercialMemoryLines.length === 0 ? (
+                      <tr className="border-b border-slate-800/70">
+                        <td className="py-4 text-slate-400" colSpan={6}>
+                          Aucun historique importé. Commence par un CSV ou XLSX
+                          contenant au minimum une désignation et un prix.
+                        </td>
+                      </tr>
+                    ) : (
+                      commercialMemoryLines.slice(0, 80).map((line) => (
+                        <tr key={line.id || line.fingerprint} className="border-b border-slate-800/70">
+                          <td className="py-3">{line.documentDate || "-"}</td>
+                          <td>{line.clientSociete || line.clientNom || "-"}</td>
+                          <td>
+                            <p className="font-medium text-white">
+                              {line.produitNom || line.designation}
+                            </p>
+                            {line.produitReference && (
+                              <p className="text-xs text-slate-400">
+                                {line.produitReference}
+                              </p>
+                            )}
+                          </td>
+                          <td>{line.quantite || "-"}</td>
+                          <td>
+                            {line.prixUnitaireHT
+                              ? `${line.prixUnitaireHT.toFixed(2)} €`
+                              : "-"}
+                          </td>
+                          <td>
+                            {line.montantHT ? `${line.montantHT.toFixed(2)} €` : "-"}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </DataTable>
+              </div>
+            )}
+
+            {commercialMemoryTab === "catalogue" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <h3 className="text-xl font-bold text-white">Catalogue reconstruit</h3>
+                <p className="mt-2 text-sm text-slate-400">
+                  Vue statistique des produits et prestations observés dans
+                  l&apos;historique.
+                </p>
+
+                <DataTable>
+                  <thead>
+                    <tr className="border-b border-slate-800 text-sm text-slate-400">
+                      <th className="py-3">Produit</th>
+                      <th>Ventes</th>
+                      <th>Prix min</th>
+                      <th>Prix médian</th>
+                      <th>Prix max</th>
+                      <th>Dernière vente</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {catalogueMemoire.slice(0, 80).map((item) => (
+                      <tr key={item.key} className="border-b border-slate-800/70">
+                        <td className="py-3">
+                          <p className="font-medium text-white">{item.nom}</p>
+                          <p className="text-xs text-slate-400">
+                            {item.reference || item.categorie || "Sans référence"}
+                          </p>
+                        </td>
+                        <td>{item.ventes}</td>
+                        <td>{formatEuro(item.prixMin)}</td>
+                        <td className="font-semibold text-white">
+                          {formatEuro(item.prixMedian)}
+                        </td>
+                        <td>{formatEuro(item.prixMax)}</td>
+                        <td>
+                          {item.derniereDate
+                            ? `${formatEuro(item.dernierPrix)} · ${item.derniereDate}`
+                            : "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              </div>
+            )}
+
+            {commercialMemoryTab === "clients" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <h3 className="text-xl font-bold text-white">Clients historiques</h3>
+                <p className="mt-2 text-sm text-slate-400">
+                  Cette vue révèle les habitudes commerciales sans créer un CRM lourd.
+                </p>
+
+                <DataTable>
+                  <thead>
+                    <tr className="border-b border-slate-800 text-sm text-slate-400">
+                      <th className="py-3">Client</th>
+                      <th>Commandes</th>
+                      <th>CA HT</th>
+                      <th>Panier moyen</th>
+                      <th>Dernière commande</th>
+                      <th>Produits fréquents</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {clientsMemoire.slice(0, 80).map((item) => (
+                      <tr key={item.key} className="border-b border-slate-800/70">
+                        <td className="py-3">
+                          <p className="font-medium text-white">
+                            {item.societe || item.nom || "Client historique"}
+                          </p>
+                          {item.email && (
+                            <p className="text-xs text-slate-400">{item.email}</p>
+                          )}
+                        </td>
+                        <td>{item.commandes}</td>
+                        <td>{formatEuro(item.chiffreAffairesHT)}</td>
+                        <td>{formatEuro(item.panierMoyenHT)}</td>
+                        <td>{item.derniereCommande || "-"}</td>
+                        <td className="max-w-sm text-sm text-slate-300">
+                          {item.produitsPrincipaux.join(" · ") || "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              </div>
+            )}
+
+            {commercialMemoryTab === "suggestions" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <h3 className="text-xl font-bold text-white">Suggestions de prix</h3>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+                  Les suggestions apparaissent dans les lignes du devis quand une
+                  référence ou une désignation ressemble à une vente historique.
+                  DevisFlow affiche toujours le nombre de ventes, la médiane, le
+                  dernier prix et l&apos;intervalle observé. Le prix n&apos;est jamais
+                  appliqué sans validation.
+                </p>
+
+                <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <Insight title="Produits avec prix" value={suggestionsDisponibles} />
+                  <Insight
+                    title="Dernier prix observé"
+                    value={
+                      dernierPrixHistorique
+                        ? `${dernierPrixHistorique.nom} · ${formatEuro(
+                            dernierPrixHistorique.dernierPrix
+                          )}`
+                        : "-"
+                    }
+                  />
+                  <Insight
+                    title="Niveau de contrôle"
+                    value="Validation humaine obligatoire"
+                  />
+                </div>
+
+                <div className="mt-6 rounded-xl border border-blue-500/20 bg-blue-500/10 p-5">
+                  <p className="font-semibold text-blue-100">Principe produit</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-300">
+                    Le système ne devine pas le marché. Il retrouve seulement ce
+                    que l&apos;entreprise a déjà vendu et explique pourquoi un prix
+                    peut être réutilisé.
+                  </p>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
         {onglet === "relances" && (
           <section className="mt-8 space-y-6">
             <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
@@ -4222,6 +4863,13 @@ export default function Dashboard({
                       <Input label="Quantité" type="number" value={String(ligne.quantite)} onChange={(v) => updateLigne(index, "quantite", v)} />
                       <Input label="Prix unitaire HT" type="number" value={String(ligne.prixUnitaire)} onChange={(v) => updateLigne(index, "prixUnitaire", v)} />
 
+                      <PriceSuggestionCard
+                        suggestion={suggestionPrixPourLigne(ligne)}
+                        onApply={(price) =>
+                          updateLigne(index, "prixUnitaire", String(price))
+                        }
+                      />
+
                       <button onClick={() => setLignes(lignes.filter((_, i) => i !== index))} className="rounded-xl border border-red-500 px-4 py-2 text-red-300">
                         Supprimer ligne
                       </button>
@@ -4591,6 +5239,59 @@ function RelanceRuleCard({
         <p className="mt-3 text-sm leading-6 text-slate-200">{preview}</p>
       </div>
     </article>
+  );
+}
+
+function PriceSuggestionCard({
+  suggestion,
+  onApply,
+}: {
+  suggestion: PriceSuggestion | null;
+  onApply: (price: number) => void;
+}) {
+  if (!suggestion) {
+    return (
+      <div className="rounded-xl border border-dashed border-slate-800 bg-slate-950/50 p-4 md:col-span-5">
+        <p className="text-sm font-semibold text-slate-300">
+          Aucune suggestion historique fiable
+        </p>
+        <p className="mt-1 text-xs text-slate-500">
+          Renseigne une référence ou une désignation proche d&apos;une ancienne vente.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-blue-500/30 bg-blue-500/10 p-4 md:col-span-5">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-blue-100">
+            Prix conseillé : {formatEuro(suggestion.suggestedPrice)} HT
+          </p>
+          <p className="mt-1 text-xs text-slate-300">
+            {suggestion.reason} · {suggestion.matchesCount} vente
+            {suggestion.matchesCount > 1 ? "s" : ""} similaire
+            {suggestion.matchesCount > 1 ? "s" : ""} · confiance {suggestion.confidence}
+          </p>
+          <p className="mt-2 text-xs leading-5 text-slate-400">
+            Médiane {formatEuro(suggestion.medianPrice)} · intervalle{" "}
+            {formatEuro(suggestion.minPrice)} → {formatEuro(suggestion.maxPrice)}
+            {suggestion.lastDate
+              ? ` · dernière vente ${formatEuro(suggestion.lastPrice)} le ${suggestion.lastDate}`
+              : ""}
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => onApply(suggestion.suggestedPrice)}
+          className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+        >
+          Utiliser ce prix
+        </button>
+      </div>
+    </div>
   );
 }
 
