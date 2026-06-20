@@ -72,7 +72,7 @@ export default function OnboardingPremiersPas({
 
       <div className="mt-6 h-2 overflow-hidden rounded-full bg-slate-800">
         <div
-          className="h-full rounded-full bg-white transition-all"
+          className="h-full rounded-full bg-blue-500 transition-all"
           style={{ width: `${progress}%` }}
         />
       </div>
@@ -123,7 +123,7 @@ export default function OnboardingPremiersPas({
               className={`mt-5 w-full rounded-xl px-4 py-3 text-sm font-semibold ${
                 step.done
                   ? "border border-slate-700 text-slate-300 hover:bg-slate-800"
-                  : "bg-white text-black hover:bg-slate-200"
+                  : "bg-blue-600 text-white hover:bg-blue-500"
               }`}
             >
               {step.done ? "Revoir" : step.action}

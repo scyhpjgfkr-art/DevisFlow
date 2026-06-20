@@ -279,13 +279,49 @@ type DevisTemplate = {
   lignes: LigneDevis[];
 };
 
+type Onglet =
+  | "dashboard"
+  | "devis"
+  | "factures"
+  | "clients"
+  | "catalogue"
+  | "importExport"
+  | "parametres"
+  | "entreprise"
+  | "compte"
+  | "tarifs";
+
+type ImportKind = "clients" | "catalogue";
+type ImportStep = "idle" | "mapping" | "preview" | "result";
+
+type ImportRow = {
+  rowNumber: number;
+  values: Record<string, string>;
+};
+
+type ImportMapping = Record<string, string>;
+
+type ImportPreviewRow = {
+  rowNumber: number;
+  valid: boolean;
+  duplicate: boolean;
+  errors: string[];
+  payload: Record<string, string | number>;
+};
+
+type ImportReport = {
+  imported: number;
+  ignored: number;
+  errors: string[];
+};
+
 type AutoTableDoc = jsPDF & {
   lastAutoTable?: {
     finalY: number;
   };
 };
 
-const DEFAULT_BRAND_COLOR = "#0f172a";
+const DEFAULT_BRAND_COLOR = "#2563eb";
 
 const DEFAULT_CONDITIONS =
   "Devis valable 30 jours à compter de sa date d'émission.\n" +
@@ -438,6 +474,288 @@ const DEVIS_TEMPLATES: DevisTemplate[] = [
     ],
   },
 ];
+
+const IMPORT_FIELDS: Record<
+  ImportKind,
+  { key: string; label: string; required?: boolean }[]
+> = {
+  clients: [
+    { key: "nom", label: "Nom", required: true },
+    { key: "societe", label: "Société" },
+    { key: "email", label: "Email" },
+    { key: "telephone", label: "Téléphone" },
+    { key: "adresse", label: "Adresse" },
+    { key: "ville", label: "Ville" },
+    { key: "codePostal", label: "Code postal" },
+    { key: "paysClient", label: "Pays" },
+    { key: "sirenClient", label: "SIREN" },
+    { key: "siretClient", label: "SIRET" },
+    { key: "tvaIntracomClient", label: "TVA intracom" },
+  ],
+  catalogue: [
+    { key: "reference", label: "Référence" },
+    { key: "nom", label: "Nom" },
+    { key: "designation", label: "Désignation", required: true },
+    { key: "description", label: "Description" },
+    { key: "prixUnitaire", label: "Prix unitaire HT", required: true },
+    { key: "tva", label: "TVA" },
+    { key: "categorie", label: "Catégorie" },
+  ],
+};
+
+const IMPORT_FIELD_ALIASES: Record<ImportKind, Record<string, string[]>> = {
+  clients: {
+    nom: ["nom", "name", "client", "contact", "prenom nom", "nom complet"],
+    societe: ["societe", "société", "entreprise", "company", "raison sociale"],
+    email: ["email", "mail", "e-mail", "courriel"],
+    telephone: ["telephone", "téléphone", "tel", "phone", "mobile"],
+    adresse: ["adresse", "address", "rue"],
+    ville: ["ville", "city", "commune"],
+    codePostal: ["code postal", "cp", "postal code", "zip"],
+    paysClient: ["pays", "country"],
+    sirenClient: ["siren", "siren client"],
+    siretClient: ["siret", "siret client"],
+    tvaIntracomClient: ["tva", "tva intracom", "vat", "numero tva", "numéro tva"],
+  },
+  catalogue: {
+    reference: ["reference", "référence", "ref", "sku", "code"],
+    nom: ["nom", "name", "produit", "prestation", "service"],
+    designation: ["designation", "désignation", "libelle", "libellé", "titre"],
+    description: ["description", "details", "détails"],
+    prixUnitaire: ["prix", "prix unitaire", "pu", "pu ht", "tarif", "montant"],
+    tva: ["tva", "vat", "taxe"],
+    categorie: ["categorie", "catégorie", "category", "famille"],
+  },
+};
+
+function normalizeImportKey(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function parseCsv(text: string) {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const nextChar = text[index + 1];
+
+    if (char === '"' && inQuotes && nextChar === '"') {
+      cell += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if ((char === "," || char === ";") && !inQuotes) {
+      row.push(cell.trim());
+      cell = "";
+      continue;
+    }
+
+    if ((char === "\n" || char === "\r") && !inQuotes) {
+      if (char === "\r" && nextChar === "\n") index += 1;
+      row.push(cell.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      cell = "";
+      continue;
+    }
+
+    cell += char;
+  }
+
+  row.push(cell.trim());
+  if (row.some(Boolean)) rows.push(row);
+
+  return rows;
+}
+
+function rowsFromCsv(text: string): { headers: string[]; rows: ImportRow[] } {
+  const matrix = parseCsv(text);
+  const headers = matrix[0]?.map((header) => header.trim()).filter(Boolean) || [];
+
+  return {
+    headers,
+    rows: matrix.slice(1).map((cells, index) => ({
+      rowNumber: index + 2,
+      values: headers.reduce<Record<string, string>>((acc, header, headerIndex) => {
+        acc[header] = cells[headerIndex]?.trim() || "";
+        return acc;
+      }, {}),
+    })),
+  };
+}
+
+function detectImportMapping(headers: string[], kind: ImportKind): ImportMapping {
+  const aliases = IMPORT_FIELD_ALIASES[kind];
+
+  return IMPORT_FIELDS[kind].reduce<ImportMapping>((mapping, field) => {
+    const accepted = [field.label, field.key, ...(aliases[field.key] || [])].map(
+      normalizeImportKey
+    );
+    const header = headers.find((candidate) =>
+      accepted.includes(normalizeImportKey(candidate))
+    );
+
+    mapping[field.key] = header || "";
+    return mapping;
+  }, {});
+}
+
+function mappedValue(row: ImportRow, mapping: ImportMapping, key: string) {
+  const header = mapping[key];
+  return header ? row.values[header]?.trim() || "" : "";
+}
+
+function parseImportPrice(value: string) {
+  const normalized = value.replace(/\s/g, "").replace(",", ".");
+  const price = Number(normalized);
+  return Number.isFinite(price) ? price : NaN;
+}
+
+function clientDuplicateKey(value: Pick<Client, "email" | "nom" | "societe">) {
+  const email = value.email.trim().toLowerCase();
+  if (email) return `email:${email}`;
+  return `name:${value.nom.trim().toLowerCase()}|${value.societe
+    .trim()
+    .toLowerCase()}`;
+}
+
+function produitDuplicateKey(value: Pick<Produit, "reference" | "nom">) {
+  const reference = value.reference.trim().toLowerCase();
+  if (reference) return `ref:${reference}`;
+  return `name:${value.nom.trim().toLowerCase()}`;
+}
+
+function buildImportPreview(
+  kind: ImportKind,
+  rows: ImportRow[],
+  mapping: ImportMapping,
+  clients: Client[],
+  produits: Produit[]
+): ImportPreviewRow[] {
+  const seen = new Set<string>();
+  const existingClients = new Set(clients.map(clientDuplicateKey));
+  const existingProduits = new Set(produits.map(produitDuplicateKey));
+
+  return rows.map((row) => {
+    const errors: string[] = [];
+
+    if (kind === "clients") {
+      const nom = mappedValue(row, mapping, "nom");
+      const societe = mappedValue(row, mapping, "societe");
+      const email = mappedValue(row, mapping, "email");
+      const telephone = mappedValue(row, mapping, "telephone");
+      const adresse = mappedValue(row, mapping, "adresse");
+      const ville = mappedValue(row, mapping, "ville");
+      const codePostal = mappedValue(row, mapping, "codePostal");
+      const paysClient = mappedValue(row, mapping, "paysClient") || "France";
+      const sirenClient = mappedValue(row, mapping, "sirenClient");
+      const siretClient = mappedValue(row, mapping, "siretClient");
+      const tvaIntracomClient = mappedValue(row, mapping, "tvaIntracomClient");
+
+      if (!nom) errors.push("Nom manquant");
+
+      const duplicateKey = clientDuplicateKey({ nom, societe, email });
+      const duplicate =
+        Boolean(nom) && (existingClients.has(duplicateKey) || seen.has(duplicateKey));
+      if (nom) seen.add(duplicateKey);
+      const payload: Record<string, string | number> = {
+        nom,
+        societe,
+        email,
+        telephone,
+        adresse,
+        ville,
+        type_client: "B2B",
+        siren_client: sirenClient,
+        siret_client: siretClient,
+        tva_intracom_client: tvaIntracomClient,
+        pays_client: paysClient,
+        adresse_complete_client: [adresse, codePostal, ville, paysClient]
+          .filter(Boolean)
+          .join(", "),
+      };
+
+      return {
+        rowNumber: row.rowNumber,
+        valid: errors.length === 0,
+        duplicate,
+        errors,
+        payload,
+      };
+    }
+
+    const reference = mappedValue(row, mapping, "reference");
+    const nom = mappedValue(row, mapping, "nom");
+    const designation = mappedValue(row, mapping, "designation");
+    const description = mappedValue(row, mapping, "description");
+    const categorie = mappedValue(row, mapping, "categorie");
+    const tva = mappedValue(row, mapping, "tva");
+    const prixUnitaire = parseImportPrice(mappedValue(row, mapping, "prixUnitaire"));
+
+    if (!designation && !nom) errors.push("Désignation manquante");
+    if (!Number.isFinite(prixUnitaire)) errors.push("Prix unitaire invalide");
+
+    const duplicateKey = produitDuplicateKey({
+      reference,
+      nom: nom || designation,
+    });
+    const duplicate =
+      Boolean(nom || designation) &&
+      (existingProduits.has(duplicateKey) || seen.has(duplicateKey));
+    if (nom || designation) seen.add(duplicateKey);
+
+    const details = [designation || nom, description, categorie ? `Catégorie : ${categorie}` : "", tva ? `TVA : ${tva}` : ""]
+      .filter(Boolean)
+      .join("\n");
+    const payload: Record<string, string | number> = {
+      reference,
+      nom: nom || designation,
+      designation: details,
+      prix_unitaire: Number.isFinite(prixUnitaire) ? prixUnitaire : 0,
+    };
+
+    return {
+      rowNumber: row.rowNumber,
+      valid: errors.length === 0,
+      duplicate,
+      errors,
+      payload,
+    };
+  });
+}
+
+function csvEscape(value: string | number) {
+  const text = String(value ?? "");
+  return /[",;\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const content = [headers, ...rows]
+    .map((row) => row.map(csvEscape).join(";"))
+    .join("\n");
+  const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
 
 function normalizeBrandColor(value?: string) {
   return /^#[0-9a-fA-F]{6}$/.test(value || "")
@@ -616,15 +934,7 @@ export default function Dashboard({
   session: Session;
   logout: () => void;
 }) {
-  const [onglet, setOnglet] = useState<
-    | "dashboard"
-    | "devis"
-    | "clients"
-    | "catalogue"
-    | "factures"
-    | "parametres"
-    | "tarifs"
-  >("dashboard");
+  const [onglet, setOnglet] = useState<Onglet>("dashboard");
 
   const [devis, setDevis] = useState<Devis[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -638,6 +948,15 @@ export default function Dashboard({
   const [relanceSendingId, setRelanceSendingId] = useState<string | null>(null);
   const [factureSendingId, setFactureSendingId] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
+  const [importKind, setImportKind] = useState<ImportKind>("clients");
+  const [importStep, setImportStep] = useState<ImportStep>("idle");
+  const [importFileName, setImportFileName] = useState("");
+  const [importHeaders, setImportHeaders] = useState<string[]>([]);
+  const [importRows, setImportRows] = useState<ImportRow[]>([]);
+  const [importMapping, setImportMapping] = useState<ImportMapping>({});
+  const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
+  const [importReport, setImportReport] = useState<ImportReport | null>(null);
+  const [importMessage, setImportMessage] = useState("");
 
   const [settings, setSettings] = useState<Settings>({
     nom: "DevisFlow",
@@ -962,6 +1281,150 @@ export default function Dashboard({
     if (!id) return;
     await supabase.from("produits").delete().eq("id", id);
     await chargerProduits();
+  }
+
+  function resetImport(nextKind = importKind) {
+    setImportKind(nextKind);
+    setImportStep("idle");
+    setImportFileName("");
+    setImportHeaders([]);
+    setImportRows([]);
+    setImportMapping({});
+    setImportPreview([]);
+    setImportReport(null);
+    setImportMessage("");
+  }
+
+  async function chargerFichierImport(file: File, kind = importKind) {
+    setImportMessage("");
+    setImportReport(null);
+
+    const extension = file.name.split(".").pop()?.toLowerCase();
+
+    if (extension === "xlsx") {
+      setImportMessage(
+        "Import XLSX non activé dans cette version. Exporte le fichier en CSV depuis Excel ou Google Sheets."
+      );
+      return;
+    }
+
+    if (extension !== "csv") {
+      setImportMessage("Format non supporté. Utilise un fichier CSV.");
+      return;
+    }
+
+    const text = await file.text();
+    const { headers, rows } = rowsFromCsv(text);
+
+    if (headers.length === 0 || rows.length === 0) {
+      setImportMessage("Le fichier ne contient pas d'en-têtes ou de lignes importables.");
+      return;
+    }
+
+    setImportKind(kind);
+    setImportFileName(file.name);
+    setImportHeaders(headers);
+    setImportRows(rows);
+    setImportMapping(detectImportMapping(headers, kind));
+    setImportPreview([]);
+    setImportStep("mapping");
+  }
+
+  function preparerApercuImport() {
+    const preview = buildImportPreview(
+      importKind,
+      importRows,
+      importMapping,
+      clients,
+      produits
+    );
+
+    setImportPreview(preview);
+    setImportStep("preview");
+  }
+
+  async function lancerImport() {
+    const importables = importPreview.filter((row) => row.valid && !row.duplicate);
+
+    if (importables.length === 0) {
+      setImportReport({
+        imported: 0,
+        ignored: importPreview.length,
+        errors: ["Aucune ligne valide à importer."],
+      });
+      setImportStep("result");
+      return;
+    }
+
+    const rowsToInsert = importables.map((row) => ({
+      user_id: session.user.id,
+      ...row.payload,
+    }));
+
+    const { error } = await supabase
+      .from(importKind === "clients" ? "clients" : "produits")
+      .insert(rowsToInsert);
+
+    if (error) {
+      setImportReport({
+        imported: 0,
+        ignored: importPreview.length,
+        errors: [error.message],
+      });
+      setImportStep("result");
+      return;
+    }
+
+    if (importKind === "clients") {
+      await chargerClients();
+    } else {
+      await chargerProduits();
+    }
+
+    setImportReport({
+      imported: importables.length,
+      ignored: importPreview.length - importables.length,
+      errors: importPreview.flatMap((row) => row.errors),
+    });
+    setImportStep("result");
+  }
+
+  function exporterClients() {
+    downloadCsv(
+      "devisflow-clients.csv",
+      [
+        "nom",
+        "societe",
+        "email",
+        "telephone",
+        "adresse",
+        "ville",
+        "pays",
+        "siren",
+        "siret",
+        "tva_intracom",
+      ],
+      clients.map((c) => [
+        c.nom,
+        c.societe,
+        c.email,
+        c.telephone,
+        c.adresse,
+        c.ville,
+        c.paysClient,
+        c.sirenClient,
+        c.siretClient,
+        c.tvaIntracomClient,
+      ])
+    );
+  }
+
+  function exporterCatalogue() {
+    downloadCsv(
+      "devisflow-catalogue.csv",
+      ["reference", "nom", "designation", "prix_unitaire_ht"],
+      produits.map((p) => [p.reference, p.nom, p.designation, p.prixUnitaire])
+    );
   }
 
   async function chargerFactures() {
@@ -2279,58 +2742,126 @@ export default function Dashboard({
       : acompteType === "fixed"
       ? Number(acompteMontant || 0)
       : 0;
+  const navigationItems: { id: Onglet; label: string; description: string }[] = [
+    { id: "dashboard", label: "Tableau de bord", description: "Pilotage" },
+    { id: "devis", label: "Devis", description: "Créer et suivre" },
+    { id: "factures", label: "Factures", description: "Émettre et encaisser" },
+    { id: "clients", label: "Clients", description: "Base commerciale" },
+    { id: "catalogue", label: "Catalogue", description: "Prestations" },
+    { id: "importExport", label: "Import / Export", description: "CSV" },
+    { id: "parametres", label: "Paramètres", description: "Entreprise" },
+    { id: "entreprise", label: "Mon entreprise", description: "Identité" },
+    { id: "compte", label: "Mon compte", description: "Profil" },
+  ];
+  const currentNavigationItem =
+    navigationItems.find((item) => item.id === onglet) || navigationItems[0];
 
   return (
-    <main className="min-h-screen bg-slate-950 p-6 text-white md:p-8">
-      <div className="mx-auto max-w-7xl">
-        <header className="rounded-2xl border border-slate-800 bg-slate-900 p-8 shadow">
-          <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-start gap-4">
-              <BrandAvatar settings={settings} size="large" />
-              <div>
-                <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
-                  Activité commerciale
-                </p>
-                <h1 className="mt-3 text-4xl font-black">
-                  {settings.nom || "DevisFlow"}
-                </h1>
-                <p className="mt-3 max-w-2xl text-slate-300">
-                  Suivez les devis envoyés, les accords signés et les montants à
-                  relancer depuis une vue claire.
-                </p>
-                {settings.siteWeb && (
-                  <p className="mt-2 text-sm text-slate-500">
-                    {displayWebsite(settings.siteWeb)}
-                  </p>
-                )}
-              </div>
+    <main className="min-h-screen bg-[#07111f] text-white">
+      <div className="flex min-h-screen">
+        <aside className="hidden w-72 shrink-0 border-r border-slate-800 bg-slate-900/80 px-5 py-6 lg:flex lg:flex-col">
+          <div className="flex items-center gap-3">
+            <BrandAvatar settings={settings} />
+            <div>
+              <p className="text-lg font-black text-white">DevisFlow</p>
+              <p className="text-xs text-slate-400">{settings.nom || "Entreprise"}</p>
             </div>
+          </div>
 
+          <nav className="mt-8 space-y-1">
+            {navigationItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setOnglet(item.id)}
+                className={`w-full rounded-xl px-4 py-3 text-left transition ${
+                  onglet === item.id
+                    ? "bg-[#2563eb] text-white shadow-sm"
+                    : "text-slate-300 hover:bg-slate-800/70 hover:text-white"
+                }`}
+              >
+                <span className="block text-sm font-semibold">{item.label}</span>
+                <span
+                  className={`mt-0.5 block text-xs ${
+                    onglet === item.id ? "text-blue-100" : "text-slate-400"
+                  }`}
+                >
+                  {item.description}
+                </span>
+              </button>
+            ))}
+          </nav>
+
+          <div className="mt-auto rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+            <p className="text-xs font-semibold uppercase text-slate-400">Plan actuel</p>
+            <p className="mt-2 text-lg font-bold text-white">Essai gratuit</p>
+            <p className="mt-1 text-sm text-slate-400">{clients.length} clients · {produits.length} prestations</p>
             <button
-              onClick={logout}
-              className="rounded-xl border border-slate-700 px-5 py-3 text-slate-200 hover:bg-slate-900"
+              onClick={() => setOnglet("tarifs")}
+              className="mt-4 w-full rounded-xl bg-[#2563eb] px-4 py-2 text-sm font-semibold text-white hover:bg-blue-500"
             >
-              Déconnexion
+              Voir l&apos;offre
             </button>
           </div>
+        </aside>
 
-          <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-4">
-            <Card title="Pipeline potentiel" value={`${montantPotentiel.toFixed(0)} €`} />
-            <Card title="Chiffre signé" value={`${chiffreSigne.toFixed(0)} €`} />
-            <Card title="Facturé HT" value={`${chiffreFacture.toFixed(0)} €`} />
-            <Card title="Prochaine action" value={prochaineAction} />
-          </div>
-        </header>
+        <div className="flex min-w-0 flex-1 flex-col">
+          <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/90 px-4 py-4 backdrop-blur md:px-8">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#2563eb]">
+                  {currentNavigationItem.description}
+                </p>
+                <h1 className="mt-1 text-2xl font-black text-white">
+                  {currentNavigationItem.label}
+                </h1>
+              </div>
 
-        <div className="mt-8 flex flex-wrap gap-3">
-          <Tab label="Tableau de bord" active={onglet === "dashboard"} onClick={() => setOnglet("dashboard")} />
-          <Tab label="Devis" active={onglet === "devis"} onClick={() => setOnglet("devis")} />
-          <Tab label="Clients" active={onglet === "clients"} onClick={() => setOnglet("clients")} />
-          <Tab label="Catalogue" active={onglet === "catalogue"} onClick={() => setOnglet("catalogue")} />
-          <Tab label="Factures" active={onglet === "factures"} onClick={() => setOnglet("factures")} />
-          <Tab label="Tarifs" active={onglet === "tarifs"} onClick={() => setOnglet("tarifs")} />
-          <Tab label="Paramètres" active={onglet === "parametres"} onClick={() => setOnglet("parametres")} />
-        </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  value={onglet}
+                  onChange={(event) => setOnglet(event.target.value as Onglet)}
+                  className="rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm text-slate-200 lg:hidden"
+                >
+                  {navigationItems.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+
+                <div className="hidden items-center gap-2 rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-300 md:flex">
+                  <BrandAvatar settings={settings} />
+                  <span>{settings.nom || "Entreprise"}</span>
+                </div>
+
+                <button
+                  onClick={() => {
+                    resetForm();
+                    setShowForm(true);
+                    setOnglet("devis");
+                  }}
+                  className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
+                >
+                  Nouveau devis
+                </button>
+
+                <button
+                  onClick={logout}
+                  className="rounded-xl border border-slate-800 bg-slate-900/80 px-5 py-3 text-sm font-semibold text-slate-200 hover:bg-slate-950/60"
+                >
+                  Déconnexion
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <div className="w-full px-4 py-6 md:px-8">
+            <section className="grid grid-cols-1 gap-4 md:grid-cols-4">
+              <Card title="Pipeline potentiel" value={`${montantPotentiel.toFixed(0)} €`} />
+              <Card title="Chiffre signé" value={`${chiffreSigne.toFixed(0)} €`} />
+              <Card title="Facturé HT" value={`${chiffreFacture.toFixed(0)} €`} />
+              <Card title="Prochaine action" value={prochaineAction} />
+            </section>
 
         {onglet === "parametres" && (
           <ParametresEntreprise
@@ -2341,6 +2872,59 @@ export default function Dashboard({
             onLogoRemove={supprimerLogo}
             logoUploading={logoUploading}
           />
+        )}
+
+        {onglet === "entreprise" && (
+          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+            <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+              <div className="flex items-start gap-4">
+                <BrandAvatar settings={settings} size="large" />
+                <div>
+                  <h2 className="text-2xl font-black text-white">
+                    {settings.nom || "Entreprise"}
+                  </h2>
+                  <p className="mt-2 text-sm text-slate-400">
+                    {settings.adresse || "Adresse non renseignée"}
+                    {settings.ville ? ` · ${settings.ville}` : ""}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-400">
+                    {settings.email || "Email non renseigné"}
+                    {settings.telephone ? ` · ${settings.telephone}` : ""}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setOnglet("parametres")}
+                className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white"
+              >
+                Modifier les informations
+              </button>
+            </div>
+
+            <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-3">
+              <Insight title="SIRET" value={settings.siret || "-"} />
+              <Insight title="TVA" value={settings.tva || "-"} />
+              <Insight title="Site web" value={displayWebsite(settings.siteWeb) || "-"} />
+            </div>
+          </section>
+        )}
+
+        {onglet === "compte" && (
+          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+            <h2 className="text-2xl font-black text-white">Mon compte</h2>
+            <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+              <Insight title="Email utilisateur" value={session.user.email || "-"} />
+              <Insight title="Clients" value={clients.length} />
+              <Insight title="Devis créés" value={devis.length} />
+            </div>
+            <button
+              onClick={logout}
+              className="mt-6 rounded-xl border border-slate-800 px-5 py-3 text-sm font-semibold text-slate-200"
+            >
+              Déconnexion
+            </button>
+          </section>
         )}
 
 
@@ -2404,7 +2988,7 @@ export default function Dashboard({
               <Card title="Factures payées" value={facturesPayees.length} />
             </section>
 
-            <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
+            <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
               <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
                 <div>
                   <h2 className="text-2xl font-bold">Pipeline commercial</h2>
@@ -2414,7 +2998,7 @@ export default function Dashboard({
                   </p>
                 </div>
 
-                <div className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-200">
+                <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm text-slate-200">
                   Prochaine action : {prochaineAction}
                 </div>
               </div>
@@ -2453,7 +3037,7 @@ export default function Dashboard({
               </div>
             </section>
 
-            <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
+            <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
               <h2 className="text-2xl font-bold">Indicateurs de conversion</h2>
               <p className="mt-2 text-slate-400">
                 Quelques repères pour comprendre la performance des devis envoyés.
@@ -2471,7 +3055,7 @@ export default function Dashboard({
         )}
 
         {onglet === "factures" && (
-          <section className="mt-8 rounded-2xl bg-slate-900 p-6 shadow">
+          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
             <h2 className="text-2xl font-bold">Factures détaillées</h2>
             <p className="mt-2 text-slate-400">
               Les factures conservent les lignes du devis : référence, désignation, quantité et prix.
@@ -2485,7 +3069,7 @@ export default function Dashboard({
 
             <DataTable>
               <thead>
-                <tr className="border-b border-slate-700 text-sm text-slate-300">
+                <tr className="border-b border-slate-800 text-sm text-slate-400">
                   <th className="py-3">Numéro</th>
                   <th>Client</th>
                   <th>Lignes</th>
@@ -2499,7 +3083,7 @@ export default function Dashboard({
 
               <tbody>
                 {factures.map((f) => (
-                  <tr key={f.id} className="border-b border-slate-800">
+                  <tr key={f.id} className="border-b border-slate-800/70">
                     <td className="py-3">{f.numero}</td>
                     <td>{f.client}</td>
                     <td>{f.lignes?.length || 0}</td>
@@ -2519,7 +3103,7 @@ export default function Dashboard({
 
 	                      <button
 	                        onClick={() => telechargerFacturePDF(f)}
-	                        className="rounded-lg border border-slate-700 px-3 py-2"
+	                        className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200"
 	                      >
 	                        PDF détaillé
 	                      </button>
@@ -2547,7 +3131,7 @@ export default function Dashboard({
         )}
 
         {onglet === "clients" && (
-          <section className="mt-8 rounded-2xl bg-slate-900 p-6 shadow">
+          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
             <h2 className="text-2xl font-bold">Base clients</h2>
             <p className="mt-2 text-slate-400">
               Ajoute les clients récurrents pour créer les devis plus vite.
@@ -2573,13 +3157,13 @@ export default function Dashboard({
               <Input label="Adresse complète e-facture" value={newClient.adresseCompleteClient} onChange={(v) => setNewClient({ ...newClient, adresseCompleteClient: v })} />
             </div>
 
-            <button onClick={ajouterClient} className="mt-6 rounded-xl bg-white px-5 py-3 font-semibold text-black">
+            <button onClick={ajouterClient} className="mt-6 rounded-xl bg-[#2563eb] px-5 py-3 font-semibold text-white">
               + Ajouter client
             </button>
 
             <DataTable>
               <thead>
-                <tr className="border-b border-slate-700 text-sm text-slate-300">
+                <tr className="border-b border-slate-800 text-sm text-slate-400">
                   <th className="py-3">Nom</th>
                   <th>Société</th>
                   <th>Email</th>
@@ -2592,7 +3176,7 @@ export default function Dashboard({
               </thead>
               <tbody>
                 {clients.map((c) => (
-                  <tr key={c.id} className="border-b border-slate-800">
+                  <tr key={c.id} className="border-b border-slate-800/70">
                     <td className="py-3">{c.nom}</td>
                     <td>{c.societe}</td>
                     <td>{c.email}</td>
@@ -2613,7 +3197,7 @@ export default function Dashboard({
         )}
 
         {onglet === "catalogue" && (
-          <section className="mt-8 rounded-2xl bg-slate-900 p-6 shadow">
+          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
             <h2 className="text-2xl font-bold">Catalogue produits</h2>
             <p className="mt-2 text-slate-400">
               Ajoute les prestations fréquentes pour remplir les lignes automatiquement.
@@ -2626,13 +3210,13 @@ export default function Dashboard({
               <Textarea label="Désignation" value={newProduit.designation} onChange={(v) => setNewProduit({ ...newProduit, designation: v })} />
             </div>
 
-            <button onClick={ajouterProduit} className="mt-6 rounded-xl bg-white px-5 py-3 font-semibold text-black">
+            <button onClick={ajouterProduit} className="mt-6 rounded-xl bg-[#2563eb] px-5 py-3 font-semibold text-white">
               + Ajouter produit
             </button>
 
             <DataTable>
               <thead>
-                <tr className="border-b border-slate-700 text-sm text-slate-300">
+                <tr className="border-b border-slate-800 text-sm text-slate-400">
                   <th className="py-3">Référence</th>
                   <th>Nom</th>
                   <th>Désignation</th>
@@ -2642,7 +3226,7 @@ export default function Dashboard({
               </thead>
               <tbody>
                 {produits.map((p) => (
-                  <tr key={p.id} className="border-b border-slate-800">
+                  <tr key={p.id} className="border-b border-slate-800/70">
                     <td className="py-3">{p.reference}</td>
                     <td>{p.nom}</td>
                     <td>{p.designation}</td>
@@ -2659,8 +3243,240 @@ export default function Dashboard({
           </section>
         )}
 
+        {onglet === "importExport" && (
+          <section className="mt-8 space-y-6">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.16em] text-[#2563eb]">
+                    Installation PME
+                  </p>
+                  <h2 className="mt-2 text-2xl font-black text-white">
+                    Importer ou exporter les données
+                  </h2>
+                  <p className="mt-2 max-w-2xl text-sm text-slate-400">
+                    Ajoute rapidement une base clients ou un catalogue de prestations
+                    depuis un fichier CSV exporté d&apos;Excel, Google Sheets ou d&apos;un ancien outil.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    onClick={exporterClients}
+                    className="rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-slate-950/60"
+                  >
+                    Export clients
+                  </button>
+                  <button
+                    onClick={exporterCatalogue}
+                    className="rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-slate-950/60"
+                  >
+                    Export catalogue
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+                <button
+                  onClick={() => resetImport("clients")}
+                  className={`rounded-2xl border p-5 text-left transition ${
+                    importKind === "clients"
+                      ? "border-[#2563eb] bg-blue-500/10"
+                      : "border-slate-800 bg-slate-900/80 hover:bg-slate-950/60"
+                  }`}
+                >
+                  <p className="text-lg font-bold text-white">Importer des clients</p>
+                  <p className="mt-2 text-sm text-slate-400">
+                    Nom, société, email, téléphone, adresse, pays, SIREN/SIRET et TVA.
+                  </p>
+                </button>
+
+                <button
+                  onClick={() => resetImport("catalogue")}
+                  className={`rounded-2xl border p-5 text-left transition ${
+                    importKind === "catalogue"
+                      ? "border-[#2563eb] bg-blue-500/10"
+                      : "border-slate-800 bg-slate-900/80 hover:bg-slate-950/60"
+                  }`}
+                >
+                  <p className="text-lg font-bold text-white">Importer le catalogue</p>
+                  <p className="mt-2 text-sm text-slate-400">
+                    Référence, désignation, description, prix unitaire, TVA et catégorie.
+                  </p>
+                </button>
+              </div>
+
+              <label className="mt-6 block rounded-2xl border border-dashed border-slate-700 bg-slate-950/60 p-6">
+                <span className="text-sm font-semibold text-slate-200">
+                  Fichier CSV
+                </span>
+                <input
+                  type="file"
+                  accept=".csv,.xlsx"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    if (file) void chargerFichierImport(file);
+                    event.currentTarget.value = "";
+                  }}
+                  className="mt-3 block w-full text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-950 file:px-4 file:py-2 file:font-semibold file:text-white"
+                />
+                <span className="mt-3 block text-xs text-slate-400">
+                  XLSX est affiché comme format cible, mais cette version importe le
+                  CSV pour rester légère et fiable sans dépendance navigateur.
+                </span>
+              </label>
+
+              {importMessage && (
+                <p className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
+                  {importMessage}
+                </p>
+              )}
+            </div>
+
+            {importStep === "mapping" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">
+                      Mapper les colonnes
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {importFileName} · {importRows.length} lignes détectées
+                    </p>
+                  </div>
+                  <button
+                    onClick={preparerApercuImport}
+                    className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white"
+                  >
+                    Suivant : aperçu
+                  </button>
+                </div>
+
+                <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+                  {IMPORT_FIELDS[importKind].map((field) => (
+                    <label key={field.key} className="block">
+                      <span className="text-sm font-medium text-slate-200">
+                        {field.label}
+                        {field.required ? " *" : ""}
+                      </span>
+                      <select
+                        value={importMapping[field.key] || ""}
+                        onChange={(event) =>
+                          setImportMapping({
+                            ...importMapping,
+                            [field.key]: event.target.value,
+                          })
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm text-slate-200 outline-none focus:border-[#2563eb]"
+                      >
+                        <option value="">Ignorer</option>
+                        {importHeaders.map((header) => (
+                          <option key={header} value={header}>
+                            {header}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {importStep === "preview" && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                  <div>
+                    <h3 className="text-xl font-bold text-white">
+                      Aperçu avant import
+                    </h3>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {importPreview.filter((row) => row.valid && !row.duplicate).length} lignes prêtes,
+                      {" "}
+                      {importPreview.filter((row) => row.duplicate).length} doublons,
+                      {" "}
+                      {importPreview.filter((row) => !row.valid).length} erreurs.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={() => setImportStep("mapping")}
+                      className="rounded-xl border border-slate-800 px-5 py-3 text-sm font-semibold text-slate-200"
+                    >
+                      Retour mapping
+                    </button>
+                    <button
+                      onClick={lancerImport}
+                      className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white"
+                    >
+                      Lancer l&apos;import
+                    </button>
+                  </div>
+                </div>
+
+                <DataTable>
+                  <thead>
+                    <tr className="border-b border-slate-800 text-sm text-slate-400">
+                      <th className="py-3">Ligne</th>
+                      <th>Statut</th>
+                      <th>Donnée principale</th>
+                      <th>Détail</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {importPreview.slice(0, 10).map((row) => (
+                      <tr key={row.rowNumber} className="border-b border-slate-800/70">
+                        <td className="py-3 text-sm text-slate-400">{row.rowNumber}</td>
+                        <td>
+                          {row.duplicate
+                            ? "Doublon"
+                            : row.valid
+                            ? "Prête"
+                            : "Erreur"}
+                        </td>
+                        <td className="font-medium text-white">
+                          {String(row.payload.nom || row.payload.designation || "-")}
+                        </td>
+                        <td className="text-sm text-slate-400">
+                          {row.errors.length > 0
+                            ? row.errors.join(", ")
+                            : row.duplicate
+                            ? "Déjà présent ou doublon dans le fichier"
+                            : "Importable"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              </div>
+            )}
+
+            {importStep === "result" && importReport && (
+              <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+                <h3 className="text-xl font-bold text-white">Résultat d&apos;import</h3>
+                <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <Insight title="Lignes importées" value={importReport.imported} />
+                  <Insight title="Lignes ignorées" value={importReport.ignored} />
+                  <Insight title="Erreurs détectées" value={importReport.errors.length} />
+                </div>
+                {importReport.errors.length > 0 && (
+                  <div className="mt-6 rounded-xl border border-rose-400/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+                    {importReport.errors.slice(0, 5).join(" · ")}
+                  </div>
+                )}
+                <button
+                  onClick={() => resetImport(importKind)}
+                  className="mt-6 rounded-xl border border-slate-800 px-5 py-3 text-sm font-semibold text-slate-200"
+                >
+                  Nouvel import
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+
         {onglet === "tarifs" && (
-          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
+          <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
             <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
               <div>
                 <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">
@@ -2712,7 +3528,7 @@ export default function Dashboard({
               <Card title="Acceptés" value={devisAcceptes.length} />
             </section>
 
-            <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
+            <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
               <h2 className="text-2xl font-bold">Performance des devis</h2>
               <p className="mt-2 text-slate-400">
                 Les montants clés pour prioriser les suivis commerciaux.
@@ -2727,17 +3543,17 @@ export default function Dashboard({
               </div>
             </section>
 
-            <button onClick={() => { resetForm(); setShowForm(true); }} className="mt-8 rounded-xl bg-white px-5 py-3 font-semibold text-black">
+            <button onClick={() => { resetForm(); setShowForm(true); }} className="mt-8 rounded-xl bg-[#2563eb] px-5 py-3 font-semibold text-white">
               Nouveau devis
             </button>
 
             {showForm && (
-              <section className="mt-8 rounded-2xl bg-slate-900 p-6 shadow">
+              <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
                 <h2 className="text-2xl font-bold">
                   {editingDevis ? "Modifier le devis" : "Créer un devis"}
                 </h2>
 
-                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
                   <h3 className="text-xl font-bold">Modèles métier</h3>
                   <p className="mt-2 text-sm text-slate-400">
                     Démarre avec une structure simple, puis ajuste les lignes et
@@ -2749,7 +3565,7 @@ export default function Dashboard({
                         key={template.name}
                         type="button"
                         onClick={() => appliquerModele(template)}
-                        className="rounded-xl border border-slate-700 bg-slate-900 p-4 text-left hover:border-slate-500"
+                        className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 text-left hover:border-blue-200"
                       >
                         <p className="font-semibold text-white">{template.name}</p>
                         <p className="mt-2 text-xs text-slate-400">
@@ -2763,8 +3579,8 @@ export default function Dashboard({
                 {clients.length > 0 && (
                   <div className="mt-6">
                     <label className="block">
-                      <span className="text-sm text-slate-300">Sélectionner un client existant</span>
-                      <select onChange={(e) => appliquerClient(e.target.value)} defaultValue="" className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white">
+                      <span className="text-sm font-medium text-slate-200">Sélectionner un client existant</span>
+                      <select onChange={(e) => appliquerClient(e.target.value)} defaultValue="" className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-white">
                         <option value="" disabled>Choisir un client</option>
                         {clients.map((c) => (
                           <option key={c.id} value={c.id}>
@@ -2785,7 +3601,7 @@ export default function Dashboard({
                   <Input label="Port HT" type="number" value={String(portHT)} onChange={(v) => setPortHT(Number(v))} />
                 </div>
 
-                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
                   <h3 className="text-xl font-bold">Fondations e-facture</h3>
                   <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
                     <SelectInput
@@ -2812,23 +3628,23 @@ export default function Dashboard({
                       onChange={setAdresseCompleteClient}
                     />
                   </div>
-                  <p className="mt-3 text-sm text-slate-500">
+                  <p className="mt-3 text-sm text-slate-400">
                     Statut e-facture : {statutEFactureLabel("non_transmise")}
                   </p>
                 </div>
 
-                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
                   <Textarea
                     label="Conditions du devis"
                     value={conditionsDevis}
                     onChange={setConditionsDevis}
                   />
-                  <p className="mt-2 text-xs text-slate-500">
+                  <p className="mt-2 text-xs text-slate-400">
                     Ces conditions sont affichées sur le PDF et sur la page client.
                   </p>
                 </div>
 
-                <div className="mt-6 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
                   <h3 className="text-xl font-bold">Acompte à la validation</h3>
                   <p className="mt-2 text-sm text-slate-400">
                     Optionnel. Si le client accepte le devis, il pourra payer cet acompte depuis le lien sécurisé.
@@ -2836,11 +3652,11 @@ export default function Dashboard({
 
                   <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
                     <label className="block">
-                      <span className="text-sm text-slate-300">Type d&apos;acompte</span>
+                      <span className="text-sm font-medium text-slate-200">Type d&apos;acompte</span>
                       <select
                         value={acompteType}
                         onChange={(e) => setAcompteType(e.target.value as AcompteType)}
-                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white"
+                        className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-white"
                       >
                         <option value="none">Aucun acompte</option>
                         <option value="percent">Pourcentage du TTC</option>
@@ -2867,7 +3683,7 @@ export default function Dashboard({
                     )}
 
                     {acompteType !== "none" && (
-                      <div className="rounded-xl border border-slate-700 bg-slate-900 p-4">
+                      <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-4">
                         <p className="text-sm text-slate-400">Acompte estimé</p>
                         <p className="mt-1 text-xl font-bold">
                           {montantAcomptePreview.toFixed(2)} € TTC
@@ -2877,13 +3693,13 @@ export default function Dashboard({
                   </div>
                 </div>
 
-                <div className="mt-8 rounded-2xl border border-slate-700 bg-slate-950 p-5">
+                <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
                   <h3 className="text-xl font-bold text-slate-100">Assistant de rédaction</h3>
                   <p className="mt-2 text-sm text-slate-400">
                     Optionnel. Utilise-le seulement pour préparer une première version du devis.
                   </p>
-                  <textarea value={promptIA} onChange={(e) => setPromptIA(e.target.value)} placeholder="Exemple : 500 flyers A5 recto verso papier couché 135g" rows={4} className="mt-4 w-full rounded-xl border border-slate-700 bg-slate-900 p-4 text-white outline-none focus:border-violet-400" />
-                  <button onClick={genererAvecIA} disabled={loadingIA} className="mt-4 rounded-xl bg-white px-5 py-3 font-semibold text-slate-950 disabled:opacity-50">
+                  <textarea value={promptIA} onChange={(e) => setPromptIA(e.target.value)} placeholder="Exemple : 500 flyers A5 recto verso papier couché 135g" rows={4} className="mt-4 w-full rounded-xl border border-slate-800 bg-slate-900/80 p-4 text-white outline-none focus:border-[#2563eb]" />
+                  <button onClick={genererAvecIA} disabled={loadingIA} className="mt-4 rounded-xl bg-slate-900/80 px-5 py-3 font-semibold text-white disabled:opacity-50">
                     {loadingIA ? "Génération..." : "Générer une proposition"}
                   </button>
                 </div>
@@ -2892,11 +3708,11 @@ export default function Dashboard({
 
                 <div className="mt-4 space-y-4">
                   {lignes.map((ligne, index) => (
-                    <div key={index} className="grid grid-cols-1 gap-4 rounded-xl border border-slate-700 p-4 md:grid-cols-5">
+                    <div key={index} className="grid grid-cols-1 gap-4 rounded-xl border border-slate-800 bg-slate-950/60 p-4 md:grid-cols-5">
                       {produits.length > 0 && (
                         <label className="block">
-                          <span className="text-sm text-slate-300">Produit catalogue</span>
-                          <select onChange={(e) => appliquerProduit(index, e.target.value)} defaultValue="" className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white">
+                          <span className="text-sm font-medium text-slate-200">Produit catalogue</span>
+                          <select onChange={(e) => appliquerProduit(index, e.target.value)} defaultValue="" className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-white">
                             <option value="" disabled>Choisir</option>
                             {produits.map((p) => (
                               <option key={p.id} value={p.id}>
@@ -2919,7 +3735,7 @@ export default function Dashboard({
                   ))}
                 </div>
 
-                <button onClick={() => setLignes([...lignes, { reference: "", designation: "", quantite: 1, prixUnitaire: 0 }])} className="mt-4 rounded-xl border border-slate-700 px-4 py-2">
+                <button onClick={() => setLignes([...lignes, { reference: "", designation: "", quantite: 1, prixUnitaire: 0 }])} className="mt-4 rounded-xl border border-slate-800 px-4 py-2 text-slate-200">
                   Ajouter une ligne
                 </button>
 
@@ -2929,30 +3745,30 @@ export default function Dashboard({
                   <p className="text-xl font-bold">TTC : {totalTTC(lignes, portHT).toFixed(2)} €</p>
                 </div>
 
-                <button onClick={genererApercu} className="mt-6 rounded-xl bg-white px-5 py-3 font-semibold text-black">
+                <button onClick={genererApercu} className="mt-6 rounded-xl bg-[#2563eb] px-5 py-3 font-semibold text-white">
                   Prévisualiser le devis
                 </button>
               </section>
             )}
 
             {preview && (
-              <section className="mt-8 rounded-2xl bg-slate-900 p-8 shadow">
+              <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-8 shadow-sm">
                 <h2 className="text-2xl font-bold">Aperçu du devis</h2>
                 <p className="mt-2 text-slate-300">{preview.numero}</p>
 
                 <div className="mt-6 flex gap-3">
-                  <button onClick={() => telechargerPDF(preview)} className="rounded-xl border border-slate-700 px-5 py-3">
+                  <button onClick={() => telechargerPDF(preview)} className="rounded-xl border border-slate-800 px-5 py-3 text-slate-200">
                     Télécharger PDF
                   </button>
 
-                  <button onClick={enregistrerDevis} className="rounded-xl bg-white px-5 py-3 font-semibold text-black">
+                  <button onClick={enregistrerDevis} className="rounded-xl bg-[#2563eb] px-5 py-3 font-semibold text-white">
                     Enregistrer
                   </button>
                 </div>
               </section>
             )}
 
-            <section className="mt-8 rounded-2xl bg-slate-900 p-6 shadow">
+            <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
               <h2 className="text-xl font-bold">Devis récents</h2>
               <p className="mt-2 text-slate-400">
                 Priorisez l&apos;envoi, la relance et le suivi client depuis cette liste.
@@ -2960,7 +3776,7 @@ export default function Dashboard({
 
               <DataTable>
                 <thead>
-                  <tr className="border-b border-slate-700 text-sm text-slate-300">
+                  <tr className="border-b border-slate-800 text-sm text-slate-400">
                     <th className="py-3">Numéro</th>
                     <th>Client</th>
                     <th>Montant HT</th>
@@ -2972,7 +3788,7 @@ export default function Dashboard({
 
                 <tbody>
                   {devisAvecStatutAuto.map((d) => (
-                    <tr key={d.numero} className="border-b border-slate-800">
+                    <tr key={d.numero} className="border-b border-slate-800/70">
                       <td className="py-3">{d.numero}</td>
                       <td>{d.client}</td>
                       <td>{totalHT(d.lignes, d.portHT).toFixed(2)} €</td>
@@ -2995,13 +3811,13 @@ export default function Dashboard({
                               <span>
                                 <span
                                   className={
-                                    step.done ? "text-slate-200" : "text-slate-500"
+                                    step.done ? "text-slate-200" : "text-slate-400"
                                   }
                                 >
                                   {step.label}
                                 </span>
                                 {step.detail && (
-                                  <span className="ml-1 text-slate-500">
+                                  <span className="ml-1 text-slate-400">
                                     {step.detail}
                                   </span>
                                 )}
@@ -3012,7 +3828,7 @@ export default function Dashboard({
                       </td>
                       <td className="flex flex-wrap gap-2 py-3">
                         {d.statutAffiche === "Brouillon" && (
-                          <button onClick={() => marquerEnvoye(d)} className="rounded-lg border border-slate-700 px-3 py-2">
+                          <button onClick={() => marquerEnvoye(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
                             Envoyer
                           </button>
                         )}
@@ -3034,20 +3850,20 @@ export default function Dashboard({
                         </button>
 
                         {d.statutAffiche === "À relancer" && (
-                          <button onClick={() => relancer(d)} className="rounded-lg border border-slate-700 px-3 py-2">
+                          <button onClick={() => relancer(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
                             Relancer sans email
                           </button>
                         )}
 
-                        <button onClick={() => marquerAccepte(d)} className="rounded-lg border border-slate-700 px-3 py-2">
+                        <button onClick={() => marquerAccepte(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
                           Accepté
                         </button>
 
-                        <button onClick={() => marquerRefuse(d)} className="rounded-lg border border-slate-700 px-3 py-2">
+                        <button onClick={() => marquerRefuse(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
                           Refusé
                         </button>
 
-                        <button onClick={() => telechargerPDF(d)} className="rounded-lg border border-slate-700 px-3 py-2">
+                        <button onClick={() => telechargerPDF(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
                           PDF
                         </button>
 
@@ -3060,7 +3876,7 @@ export default function Dashboard({
                           </button>
                         )}
 
-                        <button onClick={() => modifierDevis(d)} className="rounded-lg border border-slate-700 px-3 py-2">
+                        <button onClick={() => modifierDevis(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
                           Modifier
                         </button>
 
@@ -3075,29 +3891,10 @@ export default function Dashboard({
             </section>
           </>
         )}
+          </div>
+        </div>
       </div>
     </main>
-  );
-}
-
-function Tab({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`rounded-xl px-5 py-3 ${
-        active ? "bg-white text-black" : "bg-slate-900 text-white hover:bg-slate-800"
-      }`}
-    >
-      {label}
-    </button>
   );
 }
 
@@ -3148,7 +3945,7 @@ function ActionCard({
   return (
     <button
       onClick={onClick}
-      className="rounded-2xl border border-slate-800 bg-slate-900 p-6 text-left shadow transition hover:border-slate-500 hover:bg-slate-800"
+      className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 text-left shadow-sm transition hover:border-blue-500/60 hover:bg-blue-500/10"
     >
       <p className="text-xl font-bold text-white">{title}</p>
       <p className="mt-2 text-sm text-slate-400">{description}</p>
@@ -3173,7 +3970,7 @@ function PricingCard({
     <article
       className={`rounded-2xl border p-6 ${
         highlighted
-          ? "border-white bg-white text-slate-950"
+          ? "border-blue-500/70 bg-blue-500/10 text-white"
           : "border-slate-800 bg-slate-950 text-white"
       }`}
     >
@@ -3182,14 +3979,14 @@ function PricingCard({
           <h3 className="text-2xl font-bold">{name}</h3>
           <p
             className={`mt-2 text-sm ${
-              highlighted ? "text-slate-600" : "text-slate-400"
+              highlighted ? "text-slate-300" : "text-slate-400"
             }`}
           >
             {description}
           </p>
         </div>
         {highlighted && (
-          <span className="rounded-full bg-slate-950 px-3 py-1 text-xs font-semibold text-white">
+          <span className="rounded-full bg-blue-500 px-3 py-1 text-xs font-semibold text-white">
             Recommandé
           </span>
         )}
@@ -3199,7 +3996,7 @@ function PricingCard({
         {price}
         <span
           className={`text-base font-medium ${
-            highlighted ? "text-slate-500" : "text-slate-400"
+            highlighted ? "text-slate-400" : "text-slate-400"
           }`}
         >
           /mois HT
@@ -3211,7 +4008,7 @@ function PricingCard({
           <li key={feature} className="flex gap-3">
             <span
               className={`mt-2 h-1.5 w-1.5 shrink-0 rounded-full ${
-                highlighted ? "bg-slate-950" : "bg-slate-400"
+                highlighted ? "bg-blue-400" : "bg-slate-400"
               }`}
             />
             <span>{feature}</span>
@@ -3235,10 +4032,10 @@ function PipelineColumn({
   const total = devis.reduce((sum, d) => sum + totalHT(d.lignes, d.portHT), 0);
 
   return (
-    <div className="min-h-[280px] rounded-2xl border border-slate-800 bg-slate-950 p-4">
+    <div className="min-h-[280px] rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-sm">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="font-bold">{title}</h3>
-        <span className="rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-300">
+        <h3 className="font-bold text-white">{title}</h3>
+        <span className="rounded-full bg-slate-800/70 px-3 py-1 text-xs text-slate-400">
           {devis.length}
         </span>
       </div>
@@ -3247,14 +4044,14 @@ function PipelineColumn({
 
       <div className="space-y-3">
         {devis.length === 0 && (
-          <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-500">
+          <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-400">
             Aucun devis
           </p>
         )}
 
         {devis.map((d) => (
-          <div key={d.id || d.numero} className="rounded-xl border border-slate-800 bg-slate-900 p-4">
-            <p className="font-semibold">{d.numero}</p>
+          <div key={d.id || d.numero} className="rounded-xl border border-slate-800 bg-slate-950/60 p-4">
+            <p className="font-semibold text-white">{d.numero}</p>
             <p className="mt-1 text-sm text-slate-400">{d.client || "Client inconnu"}</p>
             <p className="mt-2 text-sm font-bold text-white">
               {totalHT(d.lignes, d.portHT).toFixed(2)} €
@@ -3268,7 +4065,7 @@ function PipelineColumn({
 
 function Card({ title, value }: { title: string; value: string | number }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow">
+    <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
       <p className="text-sm text-slate-400">{title}</p>
       <p className="mt-2 text-2xl font-bold text-white">{value}</p>
     </div>
@@ -3277,7 +4074,7 @@ function Card({ title, value }: { title: string; value: string | number }) {
 
 function Insight({ title, value }: { title: string; value: string | number }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-950 p-5">
+    <div className="rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
       <p className="text-sm text-slate-400">{title}</p>
       <p className="mt-2 text-lg font-bold text-white">{value}</p>
     </div>
@@ -3287,7 +4084,7 @@ function Insight({ title, value }: { title: string; value: string | number }) {
 function DataTable({ children }: { children: React.ReactNode }) {
   return (
     <div className="mt-8 overflow-x-auto">
-      <table className="w-full text-left">{children}</table>
+      <table className="w-full text-left text-sm text-slate-200">{children}</table>
     </div>
   );
 }
@@ -3305,12 +4102,12 @@ function Input({
 }) {
   return (
     <label className="block">
-      <span className="text-sm text-slate-300">{label}</span>
+      <span className="text-sm font-medium text-slate-200">{label}</span>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-white"
+        className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-white outline-none focus:border-[#2563eb]"
       />
     </label>
   );
@@ -3329,11 +4126,11 @@ function SelectInput<T extends string>({
 }) {
   return (
     <label className="block">
-      <span className="text-sm text-slate-300">{label}</span>
+      <span className="text-sm font-medium text-slate-200">{label}</span>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value as T)}
-        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-white"
+        className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-white outline-none focus:border-[#2563eb]"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -3356,12 +4153,12 @@ function Textarea({
 }) {
   return (
     <label className="block">
-      <span className="text-sm text-slate-300">{label}</span>
+      <span className="text-sm font-medium text-slate-200">{label}</span>
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
         rows={4}
-        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none focus:border-white"
+        className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-white outline-none focus:border-[#2563eb]"
       />
     </label>
   );

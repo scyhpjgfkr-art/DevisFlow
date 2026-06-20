@@ -40,7 +40,7 @@ export default function ParametresEntreprise({
 
   const couleur = /^#[0-9a-fA-F]{6}$/.test(settings.couleurPrincipale)
     ? settings.couleurPrincipale
-    : "#0f172a";
+    : "#2563eb";
   const displayedLogoUrl = logoPreviewUrl || settings.logoUrl;
 
   useEffect(() => {
@@ -71,10 +71,10 @@ export default function ParametresEntreprise({
   ];
 
   return (
-    <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900 p-6 text-white shadow">
+    <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 text-white shadow">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div>
-          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-violet-300">
+          <p className="text-sm font-semibold uppercase tracking-[0.25em] text-blue-300">
             Identité visuelle
           </p>
           <h2 className="mt-2 text-2xl font-bold">Paramètres entreprise</h2>
@@ -125,7 +125,7 @@ export default function ParametresEntreprise({
                 }
                 event.currentTarget.value = "";
               }}
-              className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-300 file:mr-4 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:font-semibold file:text-slate-950 disabled:opacity-50"
+              className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-300 file:mr-4 file:rounded-lg file:border-0 file:bg-blue-600 file:px-3 file:py-2 file:font-semibold file:text-white disabled:opacity-50"
             />
             <p className="mt-2 text-xs text-slate-500">
               PNG, JPG ou WebP. Taille recommandée : logo horizontal ou carré.
@@ -156,8 +156,8 @@ export default function ParametresEntreprise({
                     couleurPrincipale: event.target.value,
                   })
                 }
-                placeholder="#0f172a"
-                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition placeholder:text-slate-600 focus:border-violet-400"
+                placeholder="#2563eb"
+                className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition placeholder:text-slate-600 focus:border-blue-400"
               />
             </div>
           </label>
@@ -195,7 +195,7 @@ export default function ParametresEntreprise({
               onChange={(e) =>
                 setSettings({ ...settings, [key]: e.target.value })
               }
-              className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition placeholder:text-slate-600 focus:border-violet-400"
+              className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-white outline-none transition placeholder:text-slate-600 focus:border-blue-400"
             />
             {helper && (
               <p className="mt-2 text-xs text-slate-500">
@@ -208,7 +208,7 @@ export default function ParametresEntreprise({
 
       <button
         onClick={() => sauvegarderSettings()}
-        className="mt-6 rounded-xl bg-white px-5 py-3 font-semibold text-slate-950 transition hover:bg-slate-200"
+        className="mt-6 rounded-xl bg-blue-600 px-5 py-3 font-semibold text-white transition hover:bg-blue-500"
       >
         Sauvegarder les paramètres
       </button>
