@@ -5,12 +5,14 @@ import type { Session } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 import Auth from "./components/Auth";
 import Dashboard from "./components/Dashboard";
+import LandingPage from "./components/LandingPage";
 
 export default function Home() {
   const [session, setSession] = useState<Session | null>(null);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [showAuth, setShowAuth] = useState(false);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => {
@@ -30,6 +32,21 @@ export default function Home() {
     await supabase.auth.signOut();
   }
 
+  if (!session && !showAuth) {
+    return (
+      <LandingPage
+        onLogin={() => {
+          setAuthMode("login");
+          setShowAuth(true);
+        }}
+        onSignup={() => {
+          setAuthMode("signup");
+          setShowAuth(true);
+        }}
+      />
+    );
+  }
+
   if (!session) {
     return (
       <Auth
@@ -39,6 +56,7 @@ export default function Home() {
         setAuthPassword={setAuthPassword}
         authMode={authMode}
         setAuthMode={setAuthMode}
+        onBackToLanding={() => setShowAuth(false)}
       />
     );
   }

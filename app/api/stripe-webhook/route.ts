@@ -93,9 +93,20 @@ export async function POST(request: Request) {
           );
         }
       } else if (factureId) {
+        const paymentIntentId =
+          typeof session.payment_intent === "string"
+            ? session.payment_intent
+            : session.payment_intent?.id || null;
+
         const { error } = await supabaseAdmin
           .from("factures")
-          .update({ statut: "Payée" })
+          .update({
+            statut: "Payée",
+            stripe_session_id: session.id,
+            stripe_payment_intent_id: paymentIntentId,
+            date_paiement: new Date().toISOString(),
+            montant_paye: Number(session.amount_total || 0) / 100,
+          })
           .eq("id", factureId);
 
         if (error) {

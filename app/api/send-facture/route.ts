@@ -111,6 +111,7 @@ export async function POST(request: Request) {
       .maybeSingle<EntrepriseSettings>();
 
     let paymentUrl = "";
+    let paymentSessionId = "";
     const stripeSecretKey = process.env.STRIPE_SECRET_KEY;
     const totalTTC = Number(facture.total_ttc || 0);
 
@@ -149,6 +150,7 @@ export async function POST(request: Request) {
       });
 
       paymentUrl = session.url || "";
+      paymentSessionId = session.id;
     }
 
     const resend = new Resend(resendApiKey);
@@ -204,7 +206,10 @@ export async function POST(request: Request) {
     if (delivery.sentToOriginalRecipient) {
       const { error: updateError } = await supabaseAdmin
         .from("factures")
-        .update({ date_envoi: new Date().toISOString() })
+        .update({
+          date_envoi: new Date().toISOString(),
+          stripe_session_id: paymentSessionId || null,
+        })
         .eq("id", facture.id)
         .eq("user_id", auth.user.id);
 

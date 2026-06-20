@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import { getErrorMessage } from "@/lib/server-utils";
+import { getErrorMessage, requireSupabaseUser } from "@/lib/server-utils";
 
 type CheckoutPayload = {
   factureId?: string;
@@ -18,6 +18,9 @@ type FacturePaiement = {
 
 export async function POST(request: Request) {
   try {
+    const auth = await requireSupabaseUser(request);
+    if ("errorResponse" in auth) return auth.errorResponse;
+
     const secretKey = process.env.STRIPE_SECRET_KEY;
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -54,6 +57,7 @@ export async function POST(request: Request) {
       .from("factures")
       .select("id, numero, client, email, total_ttc, statut")
       .eq("id", factureId)
+      .eq("user_id", auth.user.id)
       .single<FacturePaiement>();
 
     if (factureError || !facture) {
@@ -103,6 +107,7 @@ export async function POST(request: Request) {
         },
       ],
       metadata: {
+        type: "facture",
         factureId,
         numero: facture.numero,
       },
@@ -110,6 +115,16 @@ export async function POST(request: Request) {
       cancel_url: `${origin}/client`,
       customer_email: facture.email || undefined,
     });
+
+    const { error: updateError } = await supabaseAdmin
+      .from("factures")
+      .update({ stripe_session_id: session.id })
+      .eq("id", facture.id)
+      .eq("user_id", auth.user.id);
+
+    if (updateError) {
+      console.error("Erreur stockage session paiement facture:", updateError);
+    }
 
     return NextResponse.json({
       url: session.url,

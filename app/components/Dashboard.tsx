@@ -131,6 +131,10 @@ type Facture = {
   totalTTC: number;
   dateCreation: string;
   dateEnvoi?: string;
+  dateEcheance?: string;
+  datePaiement?: string;
+  montantPaye?: number;
+  stripeSessionId?: string;
   statut: "À payer" | "Payée";
   lignes?: FactureLigne[];
 };
@@ -187,12 +191,41 @@ type FactureRow = {
   total_ttc?: number | null;
   date_creation?: string | null;
   date_envoi?: string | null;
+  date_echeance?: string | null;
+  date_paiement?: string | null;
+  montant_paye?: number | null;
+  stripe_session_id?: string | null;
   statut?: Facture["statut"] | null;
   lignes_factures?: LigneFactureRow[] | null;
 };
 
+type RelanceSettingsRow = {
+  devis_non_vu_enabled?: boolean | null;
+  devis_non_vu_days?: number | null;
+  devis_non_vu_template?: string | null;
+  devis_vu_non_accepte_enabled?: boolean | null;
+  devis_vu_non_accepte_days?: number | null;
+  devis_vu_non_accepte_template?: string | null;
+  facture_impayee_enabled?: boolean | null;
+  facture_impayee_days?: number | null;
+  facture_impayee_template?: string | null;
+};
+
+type RelanceHistoryRow = {
+  id?: string;
+  document_type?: "devis" | "facture" | null;
+  document_id?: string | null;
+  rule_key?: RelanceRuleKey | null;
+  recipient_email?: string | null;
+  subject?: string | null;
+  status?: "sent" | "test_fallback" | "error" | null;
+  details?: string | null;
+  sent_at?: string | null;
+};
+
 type SendFactureResponse = {
   success?: boolean;
+  url?: string;
   error?: string;
   details?: string;
   warning?: string;
@@ -268,6 +301,7 @@ type PipelineStage =
   | "Vu"
   | "Accepté"
   | "Acompte payé"
+  | "Facture créée"
   | "Facture envoyée"
   | "Facture payée";
 
@@ -286,10 +320,40 @@ type Onglet =
   | "clients"
   | "catalogue"
   | "importExport"
+  | "relances"
   | "parametres"
   | "entreprise"
   | "compte"
   | "tarifs";
+
+type RelanceRuleKey =
+  | "devis_non_vu"
+  | "devis_vu_non_accepte"
+  | "facture_impayee";
+
+type RelanceSettings = {
+  devisNonVuEnabled: boolean;
+  devisNonVuDays: number;
+  devisNonVuTemplate: string;
+  devisVuNonAccepteEnabled: boolean;
+  devisVuNonAccepteDays: number;
+  devisVuNonAccepteTemplate: string;
+  factureImpayeeEnabled: boolean;
+  factureImpayeeDays: number;
+  factureImpayeeTemplate: string;
+};
+
+type RelanceHistory = {
+  id?: string;
+  documentType: "devis" | "facture";
+  documentId: string;
+  ruleKey: RelanceRuleKey;
+  recipientEmail: string;
+  subject: string;
+  status: "sent" | "test_fallback" | "error";
+  details: string;
+  sentAt: string;
+};
 
 type ImportKind = "clients" | "catalogue";
 type ImportStep = "idle" | "mapping" | "preview" | "result";
@@ -328,6 +392,27 @@ const DEFAULT_CONDITIONS =
   "Acompte payable à l'acceptation si indiqué sur le devis.\n" +
   "Le solde est dû selon les conditions de règlement convenues.\n" +
   "Toute prestation hors périmètre fera l'objet d'un devis complémentaire.";
+
+const DEFAULT_RELANCE_SETTINGS: RelanceSettings = {
+  devisNonVuEnabled: true,
+  devisNonVuDays: 2,
+  devisNonVuTemplate:
+    "Bonjour {{client}}, nous revenons vers vous concernant le devis {{numero}}. Vous pouvez le consulter ici : {{lien}}.",
+  devisVuNonAccepteEnabled: true,
+  devisVuNonAccepteDays: 3,
+  devisVuNonAccepteTemplate:
+    "Bonjour {{client}}, vous avez consulté le devis {{numero}}. Avez-vous besoin d'une précision avant validation ? Lien : {{lien}}.",
+  factureImpayeeEnabled: true,
+  factureImpayeeDays: 0,
+  factureImpayeeTemplate:
+    "Bonjour {{client}}, nous vous rappelons que la facture {{numero}} est en attente de règlement. Vous pouvez la régler ici : {{lien_paiement}}.",
+};
+
+const RELANCE_RULE_LABELS: Record<RelanceRuleKey, string> = {
+  devis_non_vu: "Devis non vu",
+  devis_vu_non_accepte: "Devis vu non accepté",
+  facture_impayee: "Facture impayée",
+};
 
 const TYPE_CLIENT_OPTIONS: { value: TypeClient; label: string }[] = [
   { value: "B2B", label: "Entreprise (B2B)" },
@@ -927,6 +1012,76 @@ function mapLigneFacture(ligne: LigneFactureRow): FactureLigne {
   };
 }
 
+function mapRelanceSettings(row?: RelanceSettingsRow | null): RelanceSettings {
+  if (!row) return DEFAULT_RELANCE_SETTINGS;
+
+  return {
+    devisNonVuEnabled:
+      row.devis_non_vu_enabled ?? DEFAULT_RELANCE_SETTINGS.devisNonVuEnabled,
+    devisNonVuDays:
+      row.devis_non_vu_days ?? DEFAULT_RELANCE_SETTINGS.devisNonVuDays,
+    devisNonVuTemplate:
+      row.devis_non_vu_template || DEFAULT_RELANCE_SETTINGS.devisNonVuTemplate,
+    devisVuNonAccepteEnabled:
+      row.devis_vu_non_accepte_enabled ??
+      DEFAULT_RELANCE_SETTINGS.devisVuNonAccepteEnabled,
+    devisVuNonAccepteDays:
+      row.devis_vu_non_accepte_days ??
+      DEFAULT_RELANCE_SETTINGS.devisVuNonAccepteDays,
+    devisVuNonAccepteTemplate:
+      row.devis_vu_non_accepte_template ||
+      DEFAULT_RELANCE_SETTINGS.devisVuNonAccepteTemplate,
+    factureImpayeeEnabled:
+      row.facture_impayee_enabled ??
+      DEFAULT_RELANCE_SETTINGS.factureImpayeeEnabled,
+    factureImpayeeDays:
+      row.facture_impayee_days ??
+      DEFAULT_RELANCE_SETTINGS.factureImpayeeDays,
+    factureImpayeeTemplate:
+      row.facture_impayee_template ||
+      DEFAULT_RELANCE_SETTINGS.factureImpayeeTemplate,
+  };
+}
+
+function relanceSettingsPayload(settings: RelanceSettings) {
+  return {
+    devis_non_vu_enabled: settings.devisNonVuEnabled,
+    devis_non_vu_days: settings.devisNonVuDays,
+    devis_non_vu_template: settings.devisNonVuTemplate,
+    devis_vu_non_accepte_enabled: settings.devisVuNonAccepteEnabled,
+    devis_vu_non_accepte_days: settings.devisVuNonAccepteDays,
+    devis_vu_non_accepte_template: settings.devisVuNonAccepteTemplate,
+    facture_impayee_enabled: settings.factureImpayeeEnabled,
+    facture_impayee_days: settings.factureImpayeeDays,
+    facture_impayee_template: settings.factureImpayeeTemplate,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function mapRelanceHistory(row: RelanceHistoryRow): RelanceHistory | null {
+  if (!row.document_id || !row.rule_key || !row.document_type) return null;
+
+  return {
+    id: row.id,
+    documentType: row.document_type,
+    documentId: row.document_id,
+    ruleKey: row.rule_key,
+    recipientEmail: row.recipient_email || "",
+    subject: row.subject || "",
+    status: row.status || "sent",
+    details: row.details || "",
+    sentAt: row.sent_at || new Date().toISOString(),
+  };
+}
+
+function factureDueDateFromDevis(d: Devis) {
+  const base = new Date();
+  const match = d.echeance.match(/(\d+)/);
+  const days = match ? Number(match[1]) : 0;
+  base.setDate(base.getDate() + (Number.isFinite(days) ? days : 0));
+  return base.toISOString();
+}
+
 export default function Dashboard({
   session,
   logout,
@@ -947,6 +1102,7 @@ export default function Dashboard({
   const [sendingId, setSendingId] = useState<string | null>(null);
   const [relanceSendingId, setRelanceSendingId] = useState<string | null>(null);
   const [factureSendingId, setFactureSendingId] = useState<string | null>(null);
+  const [paymentLinkLoadingId, setPaymentLinkLoadingId] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
   const [importKind, setImportKind] = useState<ImportKind>("clients");
   const [importStep, setImportStep] = useState<ImportStep>("idle");
@@ -957,6 +1113,11 @@ export default function Dashboard({
   const [importPreview, setImportPreview] = useState<ImportPreviewRow[]>([]);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
   const [importMessage, setImportMessage] = useState("");
+  const [relanceSettings, setRelanceSettings] = useState<RelanceSettings>(
+    DEFAULT_RELANCE_SETTINGS
+  );
+  const [relanceHistory, setRelanceHistory] = useState<RelanceHistory[]>([]);
+  const [savingRelanceSettings, setSavingRelanceSettings] = useState(false);
 
   const [settings, setSettings] = useState<Settings>({
     nom: "DevisFlow",
@@ -1050,11 +1211,71 @@ export default function Dashboard({
         chargerClients(),
         chargerProduits(),
         chargerFactures(),
+        chargerRelanceSettings(),
+        chargerRelanceHistory(),
       ]);
     };
 
     void chargerDonnees();
+    // Les fonctions de chargement suivent le pattern existant du Dashboard.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chargerSettings]);
+
+  async function chargerRelanceSettings() {
+    const { data, error } = await supabase
+      .from("relance_settings")
+      .select("*")
+      .eq("user_id", session.user.id)
+      .maybeSingle<RelanceSettingsRow>();
+
+    if (error) {
+      console.warn("Réglages relances indisponibles:", error.message);
+      return;
+    }
+
+    setRelanceSettings(mapRelanceSettings(data));
+  }
+
+  async function chargerRelanceHistory() {
+    const { data, error } = await supabase
+      .from("relance_history")
+      .select("*")
+      .eq("user_id", session.user.id)
+      .order("sent_at", { ascending: false })
+      .limit(12)
+      .returns<RelanceHistoryRow[]>();
+
+    if (error) {
+      console.warn("Historique relances indisponible:", error.message);
+      return;
+    }
+
+    setRelanceHistory(
+      ((data as RelanceHistoryRow[] | null) || [])
+        .map(mapRelanceHistory)
+        .filter((row): row is RelanceHistory => Boolean(row))
+    );
+  }
+
+  async function sauvegarderRelanceSettings() {
+    setSavingRelanceSettings(true);
+
+    const { error } = await supabase.from("relance_settings").upsert({
+      user_id: session.user.id,
+      ...relanceSettingsPayload(relanceSettings),
+    });
+
+    setSavingRelanceSettings(false);
+
+    if (error) {
+      console.error(error);
+      alert("Erreur sauvegarde relances. Vérifie que le SQL du sprint a été appliqué.");
+      return;
+    }
+
+    await chargerRelanceSettings();
+    alert("Relances automatiques sauvegardées.");
+  }
 
   async function sauvegarderSettings(nextSettings = settings) {
     const { error } = await supabase.from("entreprise_settings").upsert({
@@ -1490,6 +1711,10 @@ export default function Dashboard({
           totalTTC: Number(f.total_ttc || 0),
           dateCreation: f.date_creation || new Date().toISOString(),
           dateEnvoi: f.date_envoi || undefined,
+          dateEcheance: f.date_echeance || undefined,
+          datePaiement: f.date_paiement || undefined,
+          montantPaye: Number(f.montant_paye || 0),
+          stripeSessionId: f.stripe_session_id || undefined,
           statut: f.statut || "À payer",
           lignes: lignesSource.map(mapLigneFacture),
         };
@@ -1530,6 +1755,7 @@ export default function Dashboard({
         statut_e_facture: "non_transmise",
         total_ht: totalHT(d.lignes, d.portHT),
         total_ttc: totalTTC(d.lignes, d.portHT),
+        date_echeance: factureDueDateFromDevis(d),
         statut: "À payer",
       })
       .select()
@@ -1571,7 +1797,11 @@ export default function Dashboard({
 
     await supabase
       .from("factures")
-      .update({ statut: "Payée" })
+      .update({
+        statut: "Payée",
+        date_paiement: new Date().toISOString(),
+        montant_paye: f.totalTTC,
+      })
       .eq("id", f.id);
 
     await chargerFactures();
@@ -1865,6 +2095,7 @@ export default function Dashboard({
 
     if (facture?.statut === "Payée") return "Facture payée";
     if (facture?.dateEnvoi) return "Facture envoyée";
+    if (facture) return "Facture créée";
     if (d.acompteStatut === "paid") return "Acompte payé";
     if (d.statut === "Accepté" || d.dateAcceptation) return "Accepté";
     if (d.dateVue) return "Vu";
@@ -1884,7 +2115,7 @@ export default function Dashboard({
         label: "Vu",
         done: Boolean(d.dateVue),
         detail: d.dateVue
-          ? `${formatDateTime(d.dateVue)}${
+          ? `${d.derniereVue ? `Dernière vue ${formatDateTime(d.derniereVue)}` : formatDateTime(d.dateVue)}${
               d.nombreVues ? ` · ${d.nombreVues} vue${d.nombreVues > 1 ? "s" : ""}` : ""
             }`
           : "",
@@ -1899,7 +2130,15 @@ export default function Dashboard({
       {
         label: "Acompte payé",
         done: d.acompteStatut === "paid",
-        detail: d.acompteStatut === "paid" ? "Paiement confirmé" : "",
+        detail:
+          d.acompteStatut === "paid"
+            ? `Paiement confirmé${montantAcompte(d) > 0 ? ` · ${formatEuro(montantAcompte(d))}` : ""}`
+            : "",
+      },
+      {
+        label: "Facture créée",
+        done: Boolean(facture),
+        detail: facture?.numero || "",
       },
       {
         label: "Facture envoyée",
@@ -1912,6 +2151,28 @@ export default function Dashboard({
         detail: facture?.statut === "Payée" ? "Réglée" : "",
       },
     ];
+  }
+
+  function relanceSuggestion(d: Devis) {
+    if (d.statut === "Accepté" || d.statut === "Refusé") return "";
+    if (!d.dateEnvoi) return "Pas encore envoyé";
+
+    if (!d.dateVue && joursDepuis(d.dateEnvoi) >= relanceSettings.devisNonVuDays) {
+      return `Relancer : non vu depuis ${joursDepuis(d.dateEnvoi)} j`;
+    }
+
+    if (
+      d.dateVue &&
+      !d.dateAcceptation &&
+      joursDepuis(d.derniereVue || d.dateVue) >=
+        relanceSettings.devisVuNonAccepteDays
+    ) {
+      return `Relancer : vu sans réponse depuis ${joursDepuis(
+        d.derniereVue || d.dateVue
+      )} j`;
+    }
+
+    return "";
   }
 
   function resetForm() {
@@ -2394,6 +2655,35 @@ export default function Dashboard({
     alert("Facture envoyée par email.");
   }
 
+  async function copierLienPaiementFacture(f: Facture) {
+    if (!f.id) return;
+
+    if (f.statut === "Payée") {
+      alert("Cette facture est déjà payée.");
+      return;
+    }
+
+    setPaymentLinkLoadingId(f.id);
+
+    const response = await fetch("/api/stripe-checkout", {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ factureId: f.id }),
+    });
+
+    setPaymentLinkLoadingId(null);
+    const data = await readApiResponse(response);
+
+    if (!response.ok || !data.url) {
+      console.error(data);
+      alert(apiErrorMessage(data, "Impossible de générer le lien de paiement."));
+      return;
+    }
+
+    await navigator.clipboard.writeText(String(data.url));
+    alert("Lien de paiement copié.");
+  }
+
   async function telechargerPDF(d: Devis) {
     const doc = new jsPDF();
     const logoDataUrl = await logoToPngDataUrl(settings.logoUrl);
@@ -2680,6 +2970,9 @@ export default function Dashboard({
     "Acompte payé": devisAvecStatutAuto.filter(
       (d) => pipelineStage(d) === "Acompte payé"
     ),
+    "Facture créée": devisAvecStatutAuto.filter(
+      (d) => pipelineStage(d) === "Facture créée"
+    ),
     "Facture envoyée": devisAvecStatutAuto.filter(
       (d) => pipelineStage(d) === "Facture envoyée"
     ),
@@ -2749,6 +3042,7 @@ export default function Dashboard({
     { id: "clients", label: "Clients", description: "Base commerciale" },
     { id: "catalogue", label: "Catalogue", description: "Prestations" },
     { id: "importExport", label: "Import / Export", description: "CSV" },
+    { id: "relances", label: "Relances", description: "Automatiser" },
     { id: "parametres", label: "Paramètres", description: "Entreprise" },
     { id: "entreprise", label: "Mon entreprise", description: "Identité" },
     { id: "compte", label: "Mon compte", description: "Profil" },
@@ -3003,7 +3297,7 @@ export default function Dashboard({
                 </div>
               </div>
 
-              <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-6">
+              <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-7">
                 <PipelineColumn
                   title="Envoyé"
                   devis={devisParEtape["Envoyé"]}
@@ -3022,6 +3316,11 @@ export default function Dashboard({
                 <PipelineColumn
                   title="Acompte payé"
                   devis={devisParEtape["Acompte payé"]}
+                  totalHT={totalHT}
+                />
+                <PipelineColumn
+                  title="Facture créée"
+                  devis={devisParEtape["Facture créée"]}
                   totalHT={totalHT}
                 />
                 <PipelineColumn
@@ -3076,6 +3375,7 @@ export default function Dashboard({
                   <th>Total HT</th>
                   <th>Total TTC</th>
                   <th>Statut</th>
+                  <th>Paiement</th>
                   <th>E-facture</th>
                   <th>Actions</th>
                 </tr>
@@ -3090,6 +3390,28 @@ export default function Dashboard({
                     <td>{f.totalHT.toFixed(2)} €</td>
                     <td>{f.totalTTC.toFixed(2)} €</td>
                     <td>{f.statut}</td>
+                    <td>
+                      <div className="text-sm">
+                        <p className={f.statut === "Payée" ? "text-emerald-300" : "text-amber-300"}>
+                          {f.statut === "Payée" ? "Payée" : "À régler"}
+                        </p>
+                        {f.dateEcheance && (
+                          <p className="mt-1 text-slate-400">
+                            Échéance {formatDateTime(f.dateEcheance)}
+                          </p>
+                        )}
+                        {f.datePaiement && (
+                          <p className="mt-1 text-slate-400">
+                            Payée le {formatDateTime(f.datePaiement)}
+                          </p>
+                        )}
+                        {Boolean(f.montantPaye) && (
+                          <p className="mt-1 text-slate-400">
+                            {formatEuro(Number(f.montantPaye))}
+                          </p>
+                        )}
+                      </div>
+                    </td>
                     <td>{statutEFactureLabel(f.statutEFacture)}</td>
                     <td className="flex flex-wrap gap-2 py-3">
                       {f.statut !== "Payée" && (
@@ -3115,6 +3437,18 @@ export default function Dashboard({
 	                      >
 	                        {factureSendingId === f.id ? "Envoi..." : "Envoyer"}
 	                      </button>
+
+                        {f.statut !== "Payée" && (
+                          <button
+                            onClick={() => copierLienPaiementFacture(f)}
+                            disabled={paymentLinkLoadingId === f.id}
+                            className="rounded-lg border border-blue-500 px-3 py-2 text-blue-300 disabled:opacity-50"
+                          >
+                            {paymentLinkLoadingId === f.id
+                              ? "Génération..."
+                              : "Lien paiement"}
+                          </button>
+                        )}
 
 	                      <button
                         onClick={() => supprimerFacture(f)}
@@ -3475,6 +3809,166 @@ export default function Dashboard({
           </section>
         )}
 
+        {onglet === "relances" && (
+          <section className="mt-8 space-y-6">
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-sm font-semibold uppercase tracking-[0.16em] text-blue-300">
+                    Relances automatiques
+                  </p>
+                  <h2 className="mt-2 text-2xl font-black text-white">
+                    Relancer sans spammer
+                  </h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+                    Active uniquement les rappels utiles. Le cron n&apos;enverra
+                    pas deux fois la même relance pour le même document et la
+                    même règle.
+                  </p>
+                </div>
+
+                <button
+                  onClick={sauvegarderRelanceSettings}
+                  disabled={savingRelanceSettings}
+                  className="rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white disabled:opacity-50 hover:bg-blue-500"
+                >
+                  {savingRelanceSettings ? "Sauvegarde..." : "Sauvegarder"}
+                </button>
+              </div>
+
+              <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
+                <RelanceRuleCard
+                  title="Devis non vu"
+                  description="Relance si le devis envoyé n'a jamais été ouvert."
+                  enabled={relanceSettings.devisNonVuEnabled}
+                  days={relanceSettings.devisNonVuDays}
+                  template={relanceSettings.devisNonVuTemplate}
+                  preview={relanceSettings.devisNonVuTemplate
+                    .replaceAll("{{client}}", "Dupont SARL")
+                    .replaceAll("{{numero}}", "DEV-2026-0042")
+                    .replaceAll("{{lien}}", "https://devis-flow.vercel.app/devis/token")}
+                  onEnabledChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      devisNonVuEnabled: value,
+                    })
+                  }
+                  onDaysChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      devisNonVuDays: Math.max(1, value),
+                    })
+                  }
+                  onTemplateChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      devisNonVuTemplate: value,
+                    })
+                  }
+                />
+
+                <RelanceRuleCard
+                  title="Devis vu non accepté"
+                  description="Relance si le client a consulté le devis sans accepter."
+                  enabled={relanceSettings.devisVuNonAccepteEnabled}
+                  days={relanceSettings.devisVuNonAccepteDays}
+                  template={relanceSettings.devisVuNonAccepteTemplate}
+                  preview={relanceSettings.devisVuNonAccepteTemplate
+                    .replaceAll("{{client}}", "Martin & Fils")
+                    .replaceAll("{{numero}}", "DEV-2026-0048")
+                    .replaceAll("{{lien}}", "https://devis-flow.vercel.app/devis/token")}
+                  onEnabledChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      devisVuNonAccepteEnabled: value,
+                    })
+                  }
+                  onDaysChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      devisVuNonAccepteDays: Math.max(1, value),
+                    })
+                  }
+                  onTemplateChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      devisVuNonAccepteTemplate: value,
+                    })
+                  }
+                />
+
+                <RelanceRuleCard
+                  title="Facture impayée"
+                  description="Relance une facture à payer après sa date d'échéance."
+                  enabled={relanceSettings.factureImpayeeEnabled}
+                  days={relanceSettings.factureImpayeeDays}
+                  template={relanceSettings.factureImpayeeTemplate}
+                  preview={relanceSettings.factureImpayeeTemplate
+                    .replaceAll("{{client}}", "Société ABC")
+                    .replaceAll("{{numero}}", "FAC-2026-0012")
+                    .replaceAll("{{lien_paiement}}", "https://checkout.stripe.com/...")}
+                  onEnabledChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      factureImpayeeEnabled: value,
+                    })
+                  }
+                  onDaysChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      factureImpayeeDays: Math.max(0, value),
+                    })
+                  }
+                  onTemplateChange={(value) =>
+                    setRelanceSettings({
+                      ...relanceSettings,
+                      factureImpayeeTemplate: value,
+                    })
+                  }
+                />
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
+              <h3 className="text-xl font-bold text-white">Historique des relances</h3>
+              <p className="mt-2 text-sm text-slate-400">
+                Les relances automatiques envoyées par le cron apparaîtront ici.
+              </p>
+
+              <DataTable>
+                <thead>
+                  <tr className="border-b border-slate-800 text-sm text-slate-400">
+                    <th className="py-3">Date</th>
+                    <th>Règle</th>
+                    <th>Document</th>
+                    <th>Email</th>
+                    <th>Statut</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {relanceHistory.length === 0 ? (
+                    <tr className="border-b border-slate-800/70">
+                      <td className="py-4 text-slate-400" colSpan={5}>
+                        Aucune relance automatique enregistrée.
+                      </td>
+                    </tr>
+                  ) : (
+                    relanceHistory.map((item) => (
+                      <tr key={item.id || `${item.documentId}-${item.ruleKey}`} className="border-b border-slate-800/70">
+                        <td className="py-3">{formatDateTime(item.sentAt)}</td>
+                        <td>{RELANCE_RULE_LABELS[item.ruleKey]}</td>
+                        <td>{item.documentType}</td>
+                        <td>{item.recipientEmail || "-"}</td>
+                        <td>{item.status}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </DataTable>
+            </div>
+          </section>
+        )}
+
         {onglet === "tarifs" && (
           <section className="mt-8 rounded-2xl border border-slate-800 bg-slate-900/80 p-6 shadow-sm">
             <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -3797,6 +4291,11 @@ export default function Dashboard({
                         <p className="text-sm font-semibold text-white">
                           {pipelineStage(d)}
                         </p>
+                        {relanceSuggestion(d) && (
+                          <p className="mt-1 text-xs font-semibold text-amber-300">
+                            {relanceSuggestion(d)}
+                          </p>
+                        )}
                         <div className="mt-2 grid gap-1">
                           {timelineSteps(d).map((step) => (
                             <div
@@ -4015,6 +4514,82 @@ function PricingCard({
           </li>
         ))}
       </ul>
+    </article>
+  );
+}
+
+function RelanceRuleCard({
+  title,
+  description,
+  enabled,
+  days,
+  template,
+  preview,
+  onEnabledChange,
+  onDaysChange,
+  onTemplateChange,
+}: {
+  title: string;
+  description: string;
+  enabled: boolean;
+  days: number;
+  template: string;
+  preview: string;
+  onEnabledChange: (value: boolean) => void;
+  onDaysChange: (value: number) => void;
+  onTemplateChange: (value: string) => void;
+}) {
+  return (
+    <article className="rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-lg font-bold text-white">{title}</h3>
+          <p className="mt-2 text-sm leading-6 text-slate-400">{description}</p>
+        </div>
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-300">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => onEnabledChange(event.target.checked)}
+            className="h-4 w-4 accent-blue-600"
+          />
+          Actif
+        </label>
+      </div>
+
+      <label className="mt-5 block">
+        <span className="text-sm font-medium text-slate-300">
+          Délai avant relance
+        </span>
+        <div className="mt-2 flex items-center gap-3">
+          <input
+            type="number"
+            min={0}
+            max={60}
+            value={days}
+            onChange={(event) => onDaysChange(Number(event.target.value))}
+            className="w-24 rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-white outline-none focus:border-blue-500"
+          />
+          <span className="text-sm text-slate-400">jour(s)</span>
+        </div>
+      </label>
+
+      <label className="mt-5 block">
+        <span className="text-sm font-medium text-slate-300">Texte email</span>
+        <textarea
+          value={template}
+          onChange={(event) => onTemplateChange(event.target.value)}
+          rows={5}
+          className="mt-2 w-full rounded-xl border border-slate-800 bg-slate-900/80 px-4 py-3 text-sm text-white outline-none focus:border-blue-500"
+        />
+      </label>
+
+      <div className="mt-5 rounded-xl border border-blue-500/20 bg-blue-500/10 p-4">
+        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-blue-300">
+          Aperçu
+        </p>
+        <p className="mt-3 text-sm leading-6 text-slate-200">{preview}</p>
+      </div>
     </article>
   );
 }
