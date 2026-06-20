@@ -5,6 +5,21 @@ export type CommercialMemoryImportRow = {
 
 export type CommercialMemoryMapping = Record<string, string>;
 
+export type CommercialMemoryHeaderCandidate = {
+  rowNumber: number;
+  score: number;
+  values: string[];
+  matchedKeywords: string[];
+};
+
+export type CommercialMemoryParsedFile = {
+  headers: string[];
+  rows: CommercialMemoryImportRow[];
+  matrix: string[][];
+  detectedHeaderRow: number;
+  headerCandidates: CommercialMemoryHeaderCandidate[];
+};
+
 export type CommercialMemoryPreviewRow = {
   rowNumber: number;
   valid: boolean;
@@ -190,32 +205,173 @@ function parseCsv(text: string) {
   return rows;
 }
 
-function matrixToRows(matrix: unknown[][]): {
-  headers: string[];
-  rows: CommercialMemoryImportRow[];
-} {
-  const firstRow = matrix.find((row) => row.some((cell) => String(cell || "").trim()));
-  const firstRowIndex = firstRow ? matrix.indexOf(firstRow) : 0;
-  const headers = (firstRow || [])
-    .map((header) => String(header || "").trim())
+function normalizeMatrix(matrix: unknown[][]) {
+  return matrix.map((row) =>
+    row.map((cell) => String(cell ?? "").trim())
+  );
+}
+
+function uniqueHeaderName(header: string, existing: string[]) {
+  if (!existing.includes(header)) return header;
+
+  let index = 2;
+  let candidate = `${header} (${index})`;
+  while (existing.includes(candidate)) {
+    index += 1;
+    candidate = `${header} (${index})`;
+  }
+  return candidate;
+}
+
+function scoreHeaderRow(row: string[]) {
+  const nonEmptyCells = row
+    .map((cell) => normalizeText(cell))
     .filter(Boolean);
+  const matched = new Set<string>();
+  let score = 0;
+
+  const has = (patterns: RegExp[]) =>
+    nonEmptyCells.some((cell) => patterns.some((pattern) => pattern.test(cell)));
+
+  if (has([/\breference\b/, /^ref$/, /\bref\b/])) {
+    matched.add("Référence");
+    score += 3;
+  }
+
+  if (has([/\bdesignation\b/, /\blibelle\b/, /\bdescription\b/, /\bdetail\b/])) {
+    matched.add("Désignation");
+    score += 5;
+  }
+
+  if (has([/\bquantite\b/, /^qte$/, /\bqte\b/, /^qty$/])) {
+    matched.add("Quantité");
+    score += 4;
+  }
+
+  if (has([/\bprix\b/, /^pu$/, /\bpu\b/, /\btarif\b/])) {
+    matched.add("Prix");
+    score += 4;
+  }
+
+  if (has([/\bmontant\b/, /\btotal\b/])) {
+    matched.add("Montant");
+    score += 4;
+  }
+
+  if (has([/^ht$/, /\bht\b/])) {
+    matched.add("HT");
+    score += 1;
+  }
+
+  if (matched.size >= 3) score += matched.size * 2;
+  if (matched.has("Désignation") && (matched.has("Prix") || matched.has("Montant"))) {
+    score += 3;
+  }
+  if (nonEmptyCells.length >= 4) score += 1;
+  if (nonEmptyCells.length <= 1 && score < 6) score = 0;
 
   return {
-    headers,
-    rows: matrix.slice(firstRowIndex + 1).map((cells, index) => ({
-      rowNumber: firstRowIndex + index + 2,
-      values: headers.reduce<Record<string, string>>((acc, header, headerIndex) => {
-        acc[header] = String(cells[headerIndex] || "").trim();
-        return acc;
-      }, {}),
-    })),
+    score,
+    matchedKeywords: [...matched],
   };
 }
 
-export async function rowsFromCommercialMemoryFile(file: File): Promise<{
+function detectHeaderCandidates(matrix: string[][]) {
+  const candidates = matrix
+    .slice(0, 30)
+    .map((row, index) => {
+      const values = row.map((cell) => cell.trim()).filter(Boolean);
+      const { score, matchedKeywords } = scoreHeaderRow(row);
+
+      return {
+        rowNumber: index + 1,
+        score,
+        values,
+        matchedKeywords,
+      };
+    })
+    .filter((candidate) => candidate.values.length > 0);
+
+  if (candidates.length === 0) return [];
+
+  return candidates;
+}
+
+function detectedHeaderRowFromCandidates(
+  candidates: CommercialMemoryHeaderCandidate[]
+) {
+  if (candidates.length === 0) return 1;
+
+  const scored = candidates.filter((candidate) => candidate.score > 0);
+  const source = scored.length > 0 ? scored : candidates;
+  const best = source.reduce((selected, candidate) =>
+    candidate.score > selected.score ? candidate : selected
+  );
+
+  return best.rowNumber;
+}
+
+export function rowsFromCommercialMemoryMatrix(
+  matrix: string[][],
+  headerRowNumber: number
+): {
   headers: string[];
   rows: CommercialMemoryImportRow[];
-}> {
+} {
+  const headerRowIndex = Math.max(headerRowNumber - 1, 0);
+  const headerCells = (matrix[headerRowIndex] || [])
+    .map((header, columnIndex) => ({
+      header: String(header || "").trim(),
+      columnIndex,
+    }))
+    .filter((cell) => cell.header);
+  const headers: string[] = [];
+  const columns = headerCells.map((cell) => {
+    const header = uniqueHeaderName(cell.header, headers);
+    headers.push(header);
+
+    return {
+      ...cell,
+      header,
+    };
+  });
+
+  return {
+    headers,
+    rows: matrix
+      .slice(headerRowIndex + 1)
+      .map((cells, index) => ({
+        rowNumber: headerRowIndex + index + 2,
+        values: columns.reduce<Record<string, string>>((acc, column) => {
+          acc[column.header] = String(cells[column.columnIndex] || "").trim();
+          return acc;
+        }, {}),
+      }))
+      .filter((row) => Object.values(row.values).some(Boolean)),
+  };
+}
+
+function matrixToRows(matrix: unknown[][]): CommercialMemoryParsedFile {
+  const normalizedMatrix = normalizeMatrix(matrix);
+  const headerCandidates = detectHeaderCandidates(normalizedMatrix);
+  const detectedHeaderRow = detectedHeaderRowFromCandidates(headerCandidates);
+  const { headers, rows } = rowsFromCommercialMemoryMatrix(
+    normalizedMatrix,
+    detectedHeaderRow
+  );
+
+  return {
+    headers,
+    rows,
+    matrix: normalizedMatrix,
+    detectedHeaderRow,
+    headerCandidates,
+  };
+}
+
+export async function rowsFromCommercialMemoryFile(
+  file: File
+): Promise<CommercialMemoryParsedFile> {
   const extension = file.name.split(".").pop()?.toLowerCase();
 
   if (extension === "csv") {
@@ -231,7 +387,15 @@ export async function rowsFromCommercialMemoryFile(file: File): Promise<{
     const firstSheetName = workbook.SheetNames[0];
     const sheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
 
-    if (!sheet) return { headers: [], rows: [] };
+    if (!sheet) {
+      return {
+        headers: [],
+        rows: [],
+        matrix: [],
+        detectedHeaderRow: 1,
+        headerCandidates: [],
+      };
+    }
 
     const matrix = XLSX.utils.sheet_to_json(sheet, {
       header: 1,
@@ -249,12 +413,27 @@ export function detectCommercialMemoryMapping(
   headers: string[]
 ): CommercialMemoryMapping {
   return COMMERCIAL_MEMORY_FIELDS.reduce<CommercialMemoryMapping>((mapping, field) => {
-    const accepted = [field.label, field.key, ...(COMMERCIAL_MEMORY_ALIASES[field.key] || [])].map(
-      normalizeKey
-    );
-    const header = headers.find((candidate) =>
-      accepted.includes(normalizeKey(candidate))
-    );
+    const aliases = [
+      field.label,
+      field.key,
+      ...(COMMERCIAL_MEMORY_ALIASES[field.key] || []),
+    ];
+    const accepted = aliases.map(normalizeKey);
+    const acceptedText = aliases.map(normalizeText).filter(Boolean);
+    const header = headers.find((candidate) => {
+      const normalized = normalizeKey(candidate);
+      const normalizedText = normalizeText(candidate);
+
+      return (
+        accepted.includes(normalized) ||
+        acceptedText.includes(normalizedText) ||
+        acceptedText.some(
+          (alias) =>
+            alias.length > 2 &&
+            (normalizedText.includes(alias) || alias.includes(normalizedText))
+        )
+      );
+    });
 
     mapping[field.key] = header || "";
     return mapping;
@@ -275,6 +454,9 @@ function parseNumber(value: string) {
     .replace(/[€\u00a0\s]/g, "")
     .replace(",", ".")
     .trim();
+
+  if (!normalized) return NaN;
+
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? parsed : NaN;
 }

@@ -13,9 +13,11 @@ import {
   detectCommercialMemoryMapping,
   mapCommercialMemoryLineRow,
   rowsFromCommercialMemoryFile,
+  rowsFromCommercialMemoryMatrix,
   suggestPriceForLine,
   type CommercialMemoryCatalogItem,
   type CommercialMemoryClientItem,
+  type CommercialMemoryHeaderCandidate,
   type CommercialMemoryImportRow,
   type CommercialMemoryLine,
   type CommercialMemoryMapping,
@@ -1147,6 +1149,10 @@ export default function Dashboard({
   const [commercialMemoryStep, setCommercialMemoryStep] =
     useState<CommercialMemoryImportStep>("idle");
   const [commercialMemoryFileName, setCommercialMemoryFileName] = useState("");
+  const [commercialMemoryMatrix, setCommercialMemoryMatrix] = useState<string[][]>([]);
+  const [commercialMemoryHeaderRow, setCommercialMemoryHeaderRow] = useState(1);
+  const [commercialMemoryHeaderCandidates, setCommercialMemoryHeaderCandidates] =
+    useState<CommercialMemoryHeaderCandidate[]>([]);
   const [commercialMemoryHeaders, setCommercialMemoryHeaders] = useState<string[]>([]);
   const [commercialMemoryRows, setCommercialMemoryRows] = useState<
     CommercialMemoryImportRow[]
@@ -1682,6 +1688,9 @@ export default function Dashboard({
   function resetCommercialMemoryImport() {
     setCommercialMemoryStep("idle");
     setCommercialMemoryFileName("");
+    setCommercialMemoryMatrix([]);
+    setCommercialMemoryHeaderRow(1);
+    setCommercialMemoryHeaderCandidates([]);
     setCommercialMemoryHeaders([]);
     setCommercialMemoryRows([]);
     setCommercialMemoryMapping({});
@@ -1690,12 +1699,32 @@ export default function Dashboard({
     setCommercialMemoryMessage("");
   }
 
+  function changerLigneEnteteMemoireCommerciale(rowNumber: number) {
+    const { headers, rows } = rowsFromCommercialMemoryMatrix(
+      commercialMemoryMatrix,
+      rowNumber
+    );
+
+    setCommercialMemoryHeaderRow(rowNumber);
+    setCommercialMemoryHeaders(headers);
+    setCommercialMemoryRows(rows);
+    setCommercialMemoryMapping(detectCommercialMemoryMapping(headers));
+    setCommercialMemoryPreview([]);
+    setCommercialMemoryMessage("");
+  }
+
   async function chargerFichierMemoireCommerciale(file: File) {
     setCommercialMemoryMessage("");
     setCommercialMemoryReport(null);
 
     try {
-      const { headers, rows } = await rowsFromCommercialMemoryFile(file);
+      const {
+        headers,
+        rows,
+        matrix,
+        detectedHeaderRow,
+        headerCandidates,
+      } = await rowsFromCommercialMemoryFile(file);
 
       if (headers.length === 0 || rows.length === 0) {
         setCommercialMemoryMessage(
@@ -1705,6 +1734,9 @@ export default function Dashboard({
       }
 
       setCommercialMemoryFileName(file.name);
+      setCommercialMemoryMatrix(matrix);
+      setCommercialMemoryHeaderRow(detectedHeaderRow);
+      setCommercialMemoryHeaderCandidates(headerCandidates);
       setCommercialMemoryHeaders(headers);
       setCommercialMemoryRows(rows);
       setCommercialMemoryMapping(detectCommercialMemoryMapping(headers));
@@ -4122,6 +4154,60 @@ export default function Dashboard({
                   >
                     Suivant : aperçu
                   </button>
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-blue-500/20 bg-blue-500/10 p-4">
+                  <div className="grid grid-cols-1 gap-4 lg:grid-cols-[1fr_360px] lg:items-end">
+                    <div>
+                      <p className="text-sm font-semibold text-blue-100">
+                        Ligne d&apos;en-tête détectée : ligne {commercialMemoryHeaderRow}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-300">
+                        DevisFlow scanne les 30 premières lignes et cherche les
+                        colonnes métier : Référence, Désignation, QTÉ, PU, HT et
+                        Montant.
+                      </p>
+                      {commercialMemoryHeaderCandidates.find(
+                        (candidate) =>
+                          candidate.rowNumber === commercialMemoryHeaderRow
+                      )?.matchedKeywords.length ? (
+                        <p className="mt-2 text-xs text-blue-100">
+                          Mots reconnus :{" "}
+                          {commercialMemoryHeaderCandidates
+                            .find(
+                              (candidate) =>
+                                candidate.rowNumber === commercialMemoryHeaderRow
+                            )
+                            ?.matchedKeywords.join(", ")}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <label className="block">
+                      <span className="text-sm font-medium text-slate-200">
+                        Changer la ligne d&apos;en-tête
+                      </span>
+                      <select
+                        value={commercialMemoryHeaderRow}
+                        onChange={(event) =>
+                          changerLigneEnteteMemoireCommerciale(
+                            Number(event.target.value)
+                          )
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-sm text-slate-100 outline-none focus:border-[#2563eb]"
+                      >
+                        {commercialMemoryHeaderCandidates.map((candidate) => (
+                          <option
+                            key={candidate.rowNumber}
+                            value={candidate.rowNumber}
+                          >
+                            Ligne {candidate.rowNumber} · score {candidate.score} ·{" "}
+                            {candidate.values.slice(0, 5).join(" | ")}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                 </div>
 
                 <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
