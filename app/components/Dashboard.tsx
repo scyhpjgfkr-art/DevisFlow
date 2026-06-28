@@ -17,6 +17,7 @@ import {
   suggestPriceForLine,
   type CommercialMemoryCatalogItem,
   type CommercialMemoryClientItem,
+  type CommercialMemoryDocumentMetadata,
   type CommercialMemoryHeaderCandidate,
   type CommercialMemoryImportRow,
   type CommercialMemoryLine,
@@ -1150,6 +1151,8 @@ export default function Dashboard({
     useState<CommercialMemoryImportStep>("idle");
   const [commercialMemoryFileName, setCommercialMemoryFileName] = useState("");
   const [commercialMemoryMatrix, setCommercialMemoryMatrix] = useState<string[][]>([]);
+  const [commercialMemoryMetadata, setCommercialMemoryMetadata] =
+    useState<CommercialMemoryDocumentMetadata | null>(null);
   const [commercialMemoryHeaderRow, setCommercialMemoryHeaderRow] = useState(1);
   const [commercialMemoryHeaderCandidates, setCommercialMemoryHeaderCandidates] =
     useState<CommercialMemoryHeaderCandidate[]>([]);
@@ -1689,6 +1692,7 @@ export default function Dashboard({
     setCommercialMemoryStep("idle");
     setCommercialMemoryFileName("");
     setCommercialMemoryMatrix([]);
+    setCommercialMemoryMetadata(null);
     setCommercialMemoryHeaderRow(1);
     setCommercialMemoryHeaderCandidates([]);
     setCommercialMemoryHeaders([]);
@@ -1724,6 +1728,7 @@ export default function Dashboard({
         matrix,
         detectedHeaderRow,
         headerCandidates,
+        metadata,
       } = await rowsFromCommercialMemoryFile(file);
 
       if (headers.length === 0 || rows.length === 0) {
@@ -1735,6 +1740,7 @@ export default function Dashboard({
 
       setCommercialMemoryFileName(file.name);
       setCommercialMemoryMatrix(matrix);
+      setCommercialMemoryMetadata(metadata);
       setCommercialMemoryHeaderRow(detectedHeaderRow);
       setCommercialMemoryHeaderCandidates(headerCandidates);
       setCommercialMemoryHeaders(headers);
@@ -1753,7 +1759,12 @@ export default function Dashboard({
     const preview = buildCommercialMemoryPreview(
       commercialMemoryRows,
       commercialMemoryMapping,
-      commercialMemoryLines
+      commercialMemoryLines,
+      {
+        metadata: commercialMemoryMetadata || undefined,
+        matrix: commercialMemoryMatrix,
+        headerRowNumber: commercialMemoryHeaderRow,
+      }
     );
 
     setCommercialMemoryPreview(preview);
@@ -2482,6 +2493,8 @@ export default function Dashboard({
         reference: ligne.reference,
         designation: ligne.designation,
         quantite: Number(ligne.quantite || 1),
+        clientNom: client,
+        clientSociete: societe,
       },
       commercialMemoryLines
     );
@@ -3212,10 +3225,33 @@ export default function Dashboard({
     () => buildCommercialMemoryClients(commercialMemoryLines),
     [commercialMemoryLines]
   );
-  const chiffreHistorique = commercialMemoryLines.reduce(
-    (sum, line) => sum + Number(line.montantHT || 0),
-    0
-  );
+  const chiffreHistorique = useMemo(() => {
+    const documentTotals = new Map<string, number>();
+    let standaloneTotal = 0;
+
+    commercialMemoryLines.forEach((line) => {
+      const documentKey = line.numeroFacture || line.documentNumero;
+      if (!documentKey) {
+        standaloneTotal += Number(line.montantHT || 0);
+        return;
+      }
+
+      if (line.totalHTDocument > 0) {
+        documentTotals.set(documentKey, line.totalHTDocument);
+        return;
+      }
+
+      documentTotals.set(
+        documentKey,
+        (documentTotals.get(documentKey) || 0) + Number(line.montantHT || 0)
+      );
+    });
+
+    return (
+      standaloneTotal +
+      [...documentTotals.values()].reduce((sum, value) => sum + value, 0)
+    );
+  }, [commercialMemoryLines]);
   const dernierPrixHistorique = catalogueMemoire
     .filter((item) => item.derniereDate)
     .sort((a, b) => b.derniereDate.localeCompare(a.derniereDate))[0];
@@ -4210,6 +4246,76 @@ export default function Dashboard({
                   </div>
                 </div>
 
+                {commercialMemoryMetadata && (
+                  <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-4">
+                    <p className="text-sm font-semibold text-slate-100">
+                      Contexte détecté dans le document
+                    </p>
+                    <div className="mt-3 grid grid-cols-1 gap-3 text-sm md:grid-cols-3">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                          Document
+                        </p>
+                        <p className="mt-1 text-slate-200">
+                          {commercialMemoryMetadata.documentNumero || "-"}
+                          {commercialMemoryMetadata.documentDate
+                            ? ` · ${commercialMemoryMetadata.documentDate}`
+                            : ""}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                          Client
+                        </p>
+                        <p className="mt-1 text-slate-200">
+                          {commercialMemoryMetadata.clientSociete ||
+                            commercialMemoryMetadata.clientNom ||
+                            "-"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                          Totaux
+                        </p>
+                        <p className="mt-1 text-slate-200">
+                          {commercialMemoryMetadata.totalHTDocument
+                            ? `${formatEuro(commercialMemoryMetadata.totalHTDocument)} HT`
+                            : "-"}
+                          {commercialMemoryMetadata.totalTTCDocument
+                            ? ` · ${formatEuro(
+                                commercialMemoryMetadata.totalTTCDocument
+                              )} TTC`
+                            : ""}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                          Commande
+                        </p>
+                        <p className="mt-1 text-slate-200">
+                          {commercialMemoryMetadata.commande || "-"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                          Affaire
+                        </p>
+                        <p className="mt-1 text-slate-200">
+                          {commercialMemoryMetadata.affaire || "-"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.14em] text-slate-500">
+                          BL
+                        </p>
+                        <p className="mt-1 text-slate-200">
+                          {commercialMemoryMetadata.bl || "-"}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3">
                   {COMMERCIAL_MEMORY_FIELDS.map((field) => (
                     <label key={field.key} className="block">
@@ -4278,9 +4384,11 @@ export default function Dashboard({
                   <thead>
                     <tr className="border-b border-slate-800 text-sm text-slate-400">
                       <th className="py-3">Ligne</th>
+                      <th>Document</th>
                       <th>Client</th>
-                      <th>Produit</th>
+                      <th>Description complète</th>
                       <th>Prix observé</th>
+                      <th>Contexte</th>
                       <th>Statut</th>
                     </tr>
                   </thead>
@@ -4288,9 +4396,16 @@ export default function Dashboard({
                     {commercialMemoryPreview.slice(0, 12).map((row) => (
                       <tr key={row.rowNumber} className="border-b border-slate-800/70">
                         <td className="py-3 text-sm text-slate-400">{row.rowNumber}</td>
+                        <td className="text-sm text-slate-300">
+                          <p>{String(row.payload.numero_facture || row.payload.document_numero || "-")}</p>
+                          <p className="text-xs text-slate-500">
+                            {String(row.payload.date_facture || row.payload.document_date || "")}
+                          </p>
+                        </td>
                         <td>
                           {String(
-                            row.payload.client_societe ||
+                            row.payload.client_detecte ||
+                              row.payload.client_societe ||
                               row.payload.client_nom ||
                               "-"
                           )}
@@ -4299,8 +4414,12 @@ export default function Dashboard({
                           <p className="font-medium text-white">
                             {String(row.payload.produit_nom || row.payload.designation)}
                           </p>
-                          <p className="mt-1 truncate text-xs text-slate-400">
-                            {String(row.payload.designation || "-")}
+                          <p className="mt-1 max-h-10 overflow-hidden text-xs leading-5 text-slate-400">
+                            {String(
+                              row.payload.description_complete ||
+                                row.payload.designation ||
+                                "-"
+                            )}
                           </p>
                         </td>
                         <td>
@@ -4309,6 +4428,19 @@ export default function Dashboard({
                             : row.payload.montant_ht
                             ? `${Number(row.payload.montant_ht).toFixed(2)} € HT`
                             : "-"}
+                        </td>
+                        <td className="max-w-xs text-xs leading-5 text-slate-400">
+                          {[
+                            row.payload.commande
+                              ? `Commande ${String(row.payload.commande)}`
+                              : "",
+                            row.payload.affaire
+                              ? `Affaire ${String(row.payload.affaire)}`
+                              : "",
+                            row.payload.bl ? `BL ${String(row.payload.bl)}` : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || "-"}
                         </td>
                         <td className="text-sm text-slate-300">
                           {row.duplicate
@@ -4357,9 +4489,9 @@ export default function Dashboard({
                 <DataTable>
                   <thead>
                     <tr className="border-b border-slate-800 text-sm text-slate-400">
-                      <th className="py-3">Date</th>
+                      <th className="py-3">Document</th>
                       <th>Client</th>
-                      <th>Produit</th>
+                      <th>Description</th>
                       <th>Qté</th>
                       <th>PU HT</th>
                       <th>Montant HT</th>
@@ -4376,17 +4508,30 @@ export default function Dashboard({
                     ) : (
                       commercialMemoryLines.slice(0, 80).map((line) => (
                         <tr key={line.id || line.fingerprint} className="border-b border-slate-800/70">
-                          <td className="py-3">{line.documentDate || "-"}</td>
-                          <td>{line.clientSociete || line.clientNom || "-"}</td>
+                          <td className="py-3 text-sm text-slate-300">
+                            <p>{line.numeroFacture || line.documentNumero || "-"}</p>
+                            <p className="text-xs text-slate-500">
+                              {line.dateFacture || line.documentDate || "-"}
+                            </p>
+                          </td>
+                          <td>{line.clientDetecte || line.clientSociete || line.clientNom || "-"}</td>
                           <td>
                             <p className="font-medium text-white">
                               {line.produitNom || line.designation}
                             </p>
-                            {line.produitReference && (
-                              <p className="text-xs text-slate-400">
-                                {line.produitReference}
-                              </p>
-                            )}
+                            <p className="mt-1 max-w-md text-xs leading-5 text-slate-400">
+                              {line.descriptionComplete || line.designation || "-"}
+                            </p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {[
+                                line.produitReference,
+                                line.commande ? `Commande ${line.commande}` : "",
+                                line.affaire ? `Affaire ${line.affaire}` : "",
+                                line.bl ? `BL ${line.bl}` : "",
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </p>
                           </td>
                           <td>{line.quantite || "-"}</td>
                           <td>
@@ -4418,6 +4563,7 @@ export default function Dashboard({
                     <tr className="border-b border-slate-800 text-sm text-slate-400">
                       <th className="py-3">Produit</th>
                       <th>Ventes</th>
+                      <th>Premier prix</th>
                       <th>Prix min</th>
                       <th>Prix médian</th>
                       <th>Prix max</th>
@@ -4434,6 +4580,11 @@ export default function Dashboard({
                           </p>
                         </td>
                         <td>{item.ventes}</td>
+                        <td>
+                          {item.premiereDate
+                            ? `${formatEuro(item.premierPrix)} · ${item.premiereDate}`
+                            : "-"}
+                        </td>
                         <td>{formatEuro(item.prixMin)}</td>
                         <td className="font-semibold text-white">
                           {formatEuro(item.prixMedian)}
@@ -4467,6 +4618,7 @@ export default function Dashboard({
                       <th>Panier moyen</th>
                       <th>Dernière commande</th>
                       <th>Produits fréquents</th>
+                      <th>Derniers prix</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4486,6 +4638,18 @@ export default function Dashboard({
                         <td>{item.derniereCommande || "-"}</td>
                         <td className="max-w-sm text-sm text-slate-300">
                           {item.produitsPrincipaux.join(" · ") || "-"}
+                        </td>
+                        <td className="max-w-sm text-xs leading-5 text-slate-400">
+                          {item.derniersPrix.length > 0
+                            ? item.derniersPrix
+                                .map(
+                                  (price) =>
+                                    `${price.produit}: ${formatEuro(price.prix)}${
+                                      price.date ? ` le ${price.date}` : ""
+                                    }`
+                                )
+                                .join(" · ")
+                            : "-"}
                         </td>
                       </tr>
                     ))}
@@ -5367,6 +5531,28 @@ function PriceSuggestionCard({
               ? ` · dernière vente ${formatEuro(suggestion.lastPrice)} le ${suggestion.lastDate}`
               : ""}
           </p>
+          {(suggestion.lastClient || suggestion.lastDocumentNumero) && (
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              Dernier contexte :{" "}
+              {[
+                suggestion.lastClient,
+                suggestion.lastDocumentNumero
+                  ? `doc. ${suggestion.lastDocumentNumero}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
+          {suggestion.clientMatchesCount > 0 && (
+            <p className="mt-1 text-xs leading-5 text-blue-200">
+              {suggestion.clientMatchesCount} vente
+              {suggestion.clientMatchesCount > 1 ? "s" : ""} similaire
+              {suggestion.clientMatchesCount > 1 ? "s" : ""} trouvée
+              {suggestion.clientMatchesCount > 1 ? "s" : ""} pour ce client ou
+              une société proche.
+            </p>
+          )}
         </div>
 
         <button
