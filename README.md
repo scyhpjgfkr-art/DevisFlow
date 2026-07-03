@@ -1,36 +1,96 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# DevisFlow
 
-## Getting Started
+DevisFlow est un SaaS B2B pour les TPE/PME de services qui veulent envoyer des devis plus professionnels, obtenir une acceptation claire et encaisser un acompte plus vite.
 
-First, run the development server:
+## Positionnement
+
+Promesse principale :
+
+> Faites accepter vos devis et encaissez vos acomptes plus vite.
+
+Le produit reste volontairement focalisé sur le parcours commercial court :
+
+1. Créer un client et une prestation.
+2. Générer un devis professionnel.
+3. Envoyer un lien client sécurisé.
+4. Suivre si le devis est vu.
+5. Obtenir une acceptation/refus verrouillé.
+6. Encaisser un acompte ou une facture via Stripe.
+7. Relancer sans perdre le fil.
+
+## Stack
+
+- Next.js 16
+- TypeScript
+- Supabase Auth, Database et Storage
+- Stripe Checkout et webhooks
+- Resend pour les emails transactionnels
+- Vercel pour le déploiement et le cron des relances
+
+## Modules Produit
+
+- Landing page publique orientée conversion.
+- Authentification et mot de passe oublié.
+- Dashboard PME sombre avec pipeline commercial.
+- Clients et catalogue de prestations.
+- Devis, PDF, email, lien public et suivi de vues.
+- Acceptation/refus en ligne avec verrouillage de la réponse.
+- Acompte Stripe sur devis accepté.
+- Factures, PDF, email et paiement Stripe.
+- Relances manuelles et automatiques simples.
+- Import/export CSV.
+- Mémoire commerciale pour reconstruire clients, produits et prix historiques.
+- Fondations e-facture additives, sans intégration PDP/Factur-X active.
+
+## Ce Que Le Produit Ne Fait Pas
+
+DevisFlow ne doit pas devenir un CRM lourd, un ERP, une comptabilité complète, une gestion de stock ou une gestion de chantier. Toute évolution doit renforcer directement l'un de ces objectifs :
+
+- augmenter le taux d'acceptation des devis ;
+- réduire le délai de paiement ;
+- améliorer la confiance client ;
+- simplifier l'usage quotidien.
+
+## Développement
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run lint
+npm run build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Variables D'environnement
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Les valeurs ne doivent jamais être commitées. Les clés attendues côté production sont notamment :
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `NEXT_PUBLIC_APP_URL`
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
+- `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY`
+- `RESEND_API_KEY`
+- `RESEND_FROM_EMAIL`
+- `RESEND_TEST_MODE`
+- `RESEND_TEST_TO_EMAIL`
+- `CRON_SECRET`
 
-## Learn More
+## Déploiement
 
-To learn more about Next.js, take a look at the following resources:
+Le projet est déployé sur Vercel. Le fichier `vercel.json` à la racine déclare le cron `/api/auto-relances`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Avant chaque déploiement :
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run lint
+npm run build
+```
 
-## Deploy on Vercel
+## Sécurité
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Les routes sensibles utilisent la session Supabase.
+- Les routes publiques utilisent des tokens documentaires et relisent les données côté serveur.
+- Stripe recalcule les montants côté serveur.
+- Les secrets restent côté serveur ou dans Vercel/Supabase.

@@ -303,16 +303,6 @@ type DevisRow = {
   lignes_devis?: LigneDevisRow[] | null;
 };
 
-type GeneratedDevis = {
-  client?: string;
-  societe?: string;
-  email?: string;
-  telephone?: string;
-  echeance?: string;
-  portHT?: number;
-  lignes?: LigneDevis[];
-};
-
 type DevisAvecStatutAuto = Devis & {
   statutAffiche: Statut;
 };
@@ -1205,9 +1195,6 @@ export default function Dashboard({
   const [acompteType, setAcompteType] = useState<AcompteType>("none");
   const [acompteMontant, setAcompteMontant] = useState(0);
   const [acomptePourcentage, setAcomptePourcentage] = useState(30);
-
-  const [promptIA, setPromptIA] = useState("");
-  const [loadingIA, setLoadingIA] = useState(false);
 
   const [newClient, setNewClient] = useState<Client>({
     nom: "",
@@ -2434,7 +2421,6 @@ export default function Dashboard({
     setAcompteType("none");
     setAcompteMontant(0);
     setAcomptePourcentage(30);
-    setPromptIA("");
     setLignes([{ reference: "", designation: "", quantite: 1, prixUnitaire: 0 }]);
     setPreview(null);
     setEditingDevis(null);
@@ -2506,59 +2492,6 @@ export default function Dashboard({
     setLignes(template.lignes.map((ligne) => ({ ...ligne })));
     setShowForm(true);
     setPreview(null);
-  }
-
-  async function genererAvecIA() {
-    if (!promptIA.trim()) {
-      alert("Décris la demande client.");
-      return;
-    }
-
-    setLoadingIA(true);
-
-    try {
-      const response = await fetch("/api/generate-devis", {
-        method: "POST",
-        headers: apiHeaders(),
-        body: JSON.stringify({
-          prompt: promptIA,
-        }),
-      });
-
-      const data = (await response.json()) as GeneratedDevis & { error?: string };
-
-      if (!response.ok) {
-        console.error(data);
-        alert(data?.error || "Erreur de génération côté serveur.");
-        setLoadingIA(false);
-        return;
-      }
-
-      setClient(data.client || "");
-      setSociete(data.societe || "");
-      setEmail(data.email || "");
-      setTelephone(data.telephone || "");
-      setEcheance(data.echeance || "À réception de facture");
-      setPortHT(Number(data.portHT || 0));
-
-      if (Array.isArray(data.lignes) && data.lignes.length > 0) {
-        setLignes(
-          data.lignes.map((ligne) => ({
-            reference: ligne.reference || "",
-            designation: ligne.designation || "",
-            quantite: Number(ligne.quantite || 1),
-            prixUnitaire: Number(ligne.prixUnitaire || 0),
-          }))
-        );
-      }
-
-      alert("Devis généré.");
-    } catch (error) {
-      console.error(error);
-      alert("Erreur de génération.");
-    }
-
-    setLoadingIA(false);
   }
 
   function genererApercu() {
@@ -5076,17 +5009,6 @@ export default function Dashboard({
                       </div>
                     )}
                   </div>
-                </div>
-
-                <div className="mt-8 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
-                  <h3 className="text-xl font-bold text-slate-100">Assistant de rédaction</h3>
-                  <p className="mt-2 text-sm text-slate-400">
-                    Optionnel. Utilise-le seulement pour préparer une première version du devis.
-                  </p>
-                  <textarea value={promptIA} onChange={(e) => setPromptIA(e.target.value)} placeholder="Exemple : 500 flyers A5 recto verso papier couché 135g" rows={4} className="mt-4 w-full rounded-xl border border-slate-800 bg-slate-900/80 p-4 text-white outline-none focus:border-[#2563eb]" />
-                  <button onClick={genererAvecIA} disabled={loadingIA} className="mt-4 rounded-xl bg-slate-900/80 px-5 py-3 font-semibold text-white disabled:opacity-50">
-                    {loadingIA ? "Génération..." : "Générer une proposition"}
-                  </button>
                 </div>
 
                 <h3 className="mt-8 text-xl font-semibold">Lignes du devis</h3>
