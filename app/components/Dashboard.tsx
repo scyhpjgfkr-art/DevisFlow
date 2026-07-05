@@ -367,6 +367,22 @@ type RelanceHistory = {
   sentAt: string;
 };
 
+type ToastVariant = "success" | "error" | "warning" | "info";
+
+type ToastMessage = {
+  id: number;
+  variant: ToastVariant;
+  message: string;
+};
+
+type ConfirmDialogState = {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  tone?: "danger" | "default";
+  onConfirm: () => Promise<void> | void;
+};
+
 type ImportKind = "clients" | "catalogue";
 type ImportStep = "idle" | "mapping" | "preview" | "result";
 
@@ -1114,6 +1130,11 @@ export default function Dashboard({
   const [clients, setClients] = useState<Client[]>([]);
   const [produits, setProduits] = useState<Produit[]>([]);
   const [factures, setFactures] = useState<Facture[]>([]);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(
+    null
+  );
+  const [confirmLoading, setConfirmLoading] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
   const [preview, setPreview] = useState<Devis | null>(null);
@@ -1222,6 +1243,51 @@ export default function Dashboard({
     { reference: "", designation: "", quantite: 1, prixUnitaire: 0 },
   ]);
 
+  const notify = useCallback((variant: ToastVariant, message: string) => {
+    const toast: ToastMessage = {
+      id: Date.now() + Math.round(Math.random() * 1000),
+      variant,
+      message,
+    };
+
+    setToasts((current) => [toast, ...current].slice(0, 4));
+  }, []);
+
+  useEffect(() => {
+    const timers = toasts.map((toast) =>
+      window.setTimeout(
+        () =>
+          setToasts((current) =>
+            current.filter((item) => item.id !== toast.id)
+          ),
+        toast.variant === "error" ? 7000 : 4500
+      )
+    );
+
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [toasts]);
+
+  function dismissToast(id: number) {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }
+
+  function requestConfirmation(dialog: ConfirmDialogState) {
+    setConfirmDialog(dialog);
+  }
+
+  async function confirmCurrentAction() {
+    if (!confirmDialog) return;
+
+    setConfirmLoading(true);
+
+    try {
+      await confirmDialog.onConfirm();
+      setConfirmDialog(null);
+    } finally {
+      setConfirmLoading(false);
+    }
+  }
+
   const chargerSettings = useCallback(async () => {
     const { data } = await supabase
       .from("entreprise_settings")
@@ -1312,12 +1378,15 @@ export default function Dashboard({
 
     if (error) {
       console.error(error);
-      alert("Erreur sauvegarde relances. Vérifie que le SQL du sprint a été appliqué.");
+      notify(
+        "error",
+        "Impossible de sauvegarder les relances. Vérifie que la configuration Supabase est à jour."
+      );
       return;
     }
 
     await chargerRelanceSettings();
-    alert("Relances automatiques sauvegardées.");
+    notify("success", "Relances automatiques sauvegardées.");
   }
 
   async function sauvegarderSettings(nextSettings = settings) {
@@ -1336,22 +1405,22 @@ export default function Dashboard({
     });
 
     if (error) {
-      alert("Erreur sauvegarde paramètres");
       console.error(error);
+      notify("error", "Impossible de sauvegarder les paramètres entreprise.");
       return;
     }
 
-    alert("Paramètres sauvegardés.");
+    notify("success", "Paramètres entreprise sauvegardés.");
   }
 
   async function uploadLogo(file: File) {
     if (!file.type.startsWith("image/")) {
-      alert("Le fichier choisi doit être une image.");
+      notify("warning", "Le fichier choisi doit être une image.");
       return;
     }
 
     if (file.size > 2 * 1024 * 1024) {
-      alert("Le logo doit faire moins de 2 Mo.");
+      notify("warning", "Le logo doit faire moins de 2 Mo.");
       return;
     }
 
@@ -1372,7 +1441,10 @@ export default function Dashboard({
 
     if (error) {
       console.error(error);
-      alert("Erreur upload logo. Vérifie que le SQL Sprint 29 a été appliqué.");
+      notify(
+        "error",
+        "Impossible d'importer le logo. Vérifie que le stockage Supabase est configuré."
+      );
       setLogoUploading(false);
       return;
     }
@@ -1392,13 +1464,22 @@ export default function Dashboard({
   }
 
   async function supprimerLogo() {
-    const nextSettings = {
-      ...settings,
-      logoUrl: "",
-    };
+    requestConfirmation({
+      title: "Supprimer le logo ?",
+      description:
+        "Les prochains devis, factures et emails utiliseront les initiales de l'entreprise à la place du logo.",
+      confirmLabel: "Supprimer le logo",
+      tone: "danger",
+      onConfirm: async () => {
+        const nextSettings = {
+          ...settings,
+          logoUrl: "",
+        };
 
-    setSettings(nextSettings);
-    await sauvegarderSettings(nextSettings);
+        setSettings(nextSettings);
+        await sauvegarderSettings(nextSettings);
+      },
+    });
   }
 
   async function chargerClients() {
@@ -1409,7 +1490,7 @@ export default function Dashboard({
 
     if (error) {
       console.error(error);
-      alert("Erreur chargement clients");
+      notify("error", "Impossible de charger les clients.");
       return;
     }
 
@@ -1436,7 +1517,7 @@ export default function Dashboard({
 
   async function ajouterClient() {
     if (!newClient.nom.trim()) {
-      alert("Le nom du client est obligatoire.");
+      notify("warning", "Le nom du client est obligatoire.");
       return;
     }
 
@@ -1460,7 +1541,7 @@ export default function Dashboard({
 
     if (error) {
       console.error(error);
-      alert("Erreur ajout client");
+      notify("error", "Impossible d'ajouter le client.");
       return;
     }
 
@@ -1480,12 +1561,33 @@ export default function Dashboard({
     });
 
     await chargerClients();
+    notify("success", "Client ajouté.");
   }
 
-  async function supprimerClient(id?: string) {
+  function supprimerClient(id?: string) {
     if (!id) return;
-    await supabase.from("clients").delete().eq("id", id);
-    await chargerClients();
+    const clientToDelete = clients.find((item) => item.id === id);
+
+    requestConfirmation({
+      title: "Supprimer ce client ?",
+      description: `Le client ${
+        clientToDelete?.societe || clientToDelete?.nom || "sélectionné"
+      } sera retiré de la base clients. Les devis déjà créés ne sont pas modifiés.`,
+      confirmLabel: "Supprimer le client",
+      tone: "danger",
+      onConfirm: async () => {
+        const { error } = await supabase.from("clients").delete().eq("id", id);
+
+        if (error) {
+          console.error(error);
+          notify("error", "Impossible de supprimer le client.");
+          return;
+        }
+
+        await chargerClients();
+        notify("success", "Client supprimé.");
+      },
+    });
   }
 
   async function chargerProduits() {
@@ -1496,7 +1598,7 @@ export default function Dashboard({
 
     if (error) {
       console.error(error);
-      alert("Erreur chargement catalogue");
+      notify("error", "Impossible de charger le catalogue.");
       return;
     }
 
@@ -1513,7 +1615,7 @@ export default function Dashboard({
 
   async function ajouterProduit() {
     if (!newProduit.nom.trim()) {
-      alert("Le nom du produit est obligatoire.");
+      notify("warning", "Le nom du produit est obligatoire.");
       return;
     }
 
@@ -1527,7 +1629,7 @@ export default function Dashboard({
 
     if (error) {
       console.error(error);
-      alert("Erreur ajout produit");
+      notify("error", "Impossible d'ajouter le produit.");
       return;
     }
 
@@ -1539,12 +1641,33 @@ export default function Dashboard({
     });
 
     await chargerProduits();
+    notify("success", "Produit ajouté au catalogue.");
   }
 
-  async function supprimerProduit(id?: string) {
+  function supprimerProduit(id?: string) {
     if (!id) return;
-    await supabase.from("produits").delete().eq("id", id);
-    await chargerProduits();
+    const produitToDelete = produits.find((item) => item.id === id);
+
+    requestConfirmation({
+      title: "Supprimer ce produit ?",
+      description: `La prestation ${
+        produitToDelete?.nom || produitToDelete?.designation || "sélectionnée"
+      } sera retirée du catalogue. Les devis déjà créés ne sont pas modifiés.`,
+      confirmLabel: "Supprimer le produit",
+      tone: "danger",
+      onConfirm: async () => {
+        const { error } = await supabase.from("produits").delete().eq("id", id);
+
+        if (error) {
+          console.error(error);
+          notify("error", "Impossible de supprimer le produit.");
+          return;
+        }
+
+        await chargerProduits();
+        notify("success", "Produit supprimé.");
+      },
+    });
   }
 
   function resetImport(nextKind = importKind) {
@@ -1884,7 +2007,7 @@ export default function Dashboard({
 
     if (error) {
       console.error(error);
-      alert("Erreur chargement factures");
+      notify("error", "Impossible de charger les factures.");
       return;
     }
 
@@ -1955,7 +2078,7 @@ export default function Dashboard({
 
     const existe = factures.find((f) => f.devisId === d.id);
     if (existe) {
-      alert("Ce devis a déjà été transformé en facture.");
+      notify("info", "Ce devis a déjà été transformé en facture.");
       return;
     }
 
@@ -1991,7 +2114,7 @@ export default function Dashboard({
 
     if (error || !facture) {
       console.error(error);
-      alert("Erreur création facture");
+      notify("error", "Impossible de créer la facture.");
       return;
     }
 
@@ -2007,7 +2130,10 @@ export default function Dashboard({
 
     if (lignesError) {
       console.error(lignesError);
-      alert("Facture créée, mais erreur sur les lignes de facture.");
+      notify(
+        "warning",
+        "La facture a été créée, mais les lignes n'ont pas pu être enregistrées."
+      );
       return;
     }
 
@@ -2016,7 +2142,7 @@ export default function Dashboard({
     await chargerFactures();
     await chargerDevis();
 
-    alert("Facture détaillée créée.");
+    notify("success", "Facture détaillée créée.");
     setOnglet("factures");
   }
 
@@ -2035,10 +2161,27 @@ export default function Dashboard({
     await chargerFactures();
   }
 
-  async function supprimerFacture(f: Facture) {
+  function supprimerFacture(f: Facture) {
     if (!f.id) return;
-    await supabase.from("factures").delete().eq("id", f.id);
-    await chargerFactures();
+
+    requestConfirmation({
+      title: "Supprimer cette facture ?",
+      description: `La facture ${f.numero} sera supprimée de DevisFlow. Cette action ne peut pas être annulée depuis l'interface.`,
+      confirmLabel: "Supprimer la facture",
+      tone: "danger",
+      onConfirm: async () => {
+        const { error } = await supabase.from("factures").delete().eq("id", f.id);
+
+        if (error) {
+          console.error(error);
+          notify("error", "Impossible de supprimer la facture.");
+          return;
+        }
+
+        await chargerFactures();
+        notify("success", "Facture supprimée.");
+      },
+    });
   }
 
   async function telechargerFacturePDF(f: Facture) {
@@ -2168,8 +2311,8 @@ export default function Dashboard({
       .order("created_at", { ascending: false });
 
     if (error) {
-      alert("Erreur chargement devis");
       console.error(error);
+      notify("error", "Impossible de charger les devis.");
       return;
     }
 
@@ -2291,12 +2434,15 @@ export default function Dashboard({
     const lien = getClientLink(d);
 
     if (!lien) {
-      alert("Ce devis n'a pas encore de lien public. Modifie/enregistre le devis ou crée un nouveau devis.");
+      notify(
+        "warning",
+        "Ce devis n'a pas encore de lien public. Enregistre le devis avant de le partager."
+      );
       return;
     }
 
     await navigator.clipboard.writeText(lien);
-    alert("Lien client copié.");
+    notify("success", "Lien client copié.");
   }
 
   function joursDepuis(date?: string) {
@@ -2437,6 +2583,23 @@ export default function Dashboard({
     }
 
     setLignes(copy);
+  }
+
+  function supprimerLigneDevis(index: number) {
+    const ligne = lignes[index];
+
+    requestConfirmation({
+      title: "Supprimer cette ligne ?",
+      description: `La ligne ${
+        ligne?.designation || ligne?.reference || "sélectionnée"
+      } sera retirée du devis en cours.`,
+      confirmLabel: "Supprimer la ligne",
+      tone: "danger",
+      onConfirm: () => {
+        setLignes((current) => current.filter((_, itemIndex) => itemIndex !== index));
+        notify("success", "Ligne supprimée du devis.");
+      },
+    });
   }
 
   function appliquerClient(clientId: string) {
@@ -2616,8 +2779,8 @@ export default function Dashboard({
         .single();
 
       if (error) {
-        alert("Erreur enregistrement devis");
         console.error(error);
+        notify("error", "Impossible d'enregistrer le devis.");
         return;
       }
 
@@ -2634,6 +2797,7 @@ export default function Dashboard({
 
     await chargerDevis();
     resetForm();
+    notify("success", "Devis enregistré.");
   }
 
   function modifierDevis(d: Devis) {
@@ -2660,10 +2824,27 @@ export default function Dashboard({
     setPreview(null);
   }
 
-  async function supprimerDevis(d: Devis) {
+  function supprimerDevis(d: Devis) {
     if (!d.id) return;
-    await supabase.from("devis").delete().eq("id", d.id);
-    await chargerDevis();
+
+    requestConfirmation({
+      title: "Supprimer ce devis ?",
+      description: `Le devis ${d.numero} sera supprimé. Le lien client associé ne sera plus exploitable.`,
+      confirmLabel: "Supprimer le devis",
+      tone: "danger",
+      onConfirm: async () => {
+        const { error } = await supabase.from("devis").delete().eq("id", d.id);
+
+        if (error) {
+          console.error(error);
+          notify("error", "Impossible de supprimer le devis.");
+          return;
+        }
+
+        await chargerDevis();
+        notify("success", "Devis supprimé.");
+      },
+    });
   }
 
   async function marquerEnvoye(d: Devis) {
@@ -2706,7 +2887,7 @@ export default function Dashboard({
     if (!d.id) return;
 
     if (!d.email) {
-      alert("Impossible de relancer : email client manquant.");
+      notify("warning", "Impossible de relancer : email client manquant.");
       return;
     }
 
@@ -2731,12 +2912,12 @@ export default function Dashboard({
 
     if (!response.ok) {
       console.error(data);
-      alert(apiErrorMessage(data, "Erreur lors de la relance email."));
+      notify("error", apiErrorMessage(data, "Erreur lors de la relance email."));
       return;
     }
 
     if (data.testFallback && !data.sentToOriginalRecipient) {
-      alert(data.warning || "Email redirigé vers l'adresse de test Resend.");
+      notify("warning", data.warning || "Email redirigé vers l'adresse de test Resend.");
       return;
     }
 
@@ -2749,14 +2930,14 @@ export default function Dashboard({
       .eq("id", d.id);
 
     await chargerDevis();
-    alert("Relance envoyée par email.");
+    notify("success", "Relance envoyée par email.");
   }
 
   async function envoyerParEmail(d: Devis) {
     if (!d.id) return;
 
     if (!d.email) {
-      alert("Impossible d'envoyer : email client manquant.");
+      notify("warning", "Impossible d'envoyer : email client manquant.");
       return;
     }
 
@@ -2784,12 +2965,12 @@ export default function Dashboard({
 
     if (!response.ok) {
       console.error(data);
-      alert(apiErrorMessage(data, "Erreur lors de l'envoi de l'email."));
+      notify("error", apiErrorMessage(data, "Erreur lors de l'envoi de l'email."));
       return;
     }
 
     if (data.testFallback && !data.sentToOriginalRecipient) {
-      alert(data.warning || "Email redirigé vers l'adresse de test Resend.");
+      notify("warning", data.warning || "Email redirigé vers l'adresse de test Resend.");
       return;
     }
 
@@ -2802,14 +2983,14 @@ export default function Dashboard({
       .eq("id", d.id);
 
     await chargerDevis();
-    alert("Devis envoyé par email.");
+    notify("success", "Devis envoyé par email.");
   }
 
   async function envoyerFactureParEmail(f: Facture) {
     if (!f.id) return;
 
     if (!f.email) {
-      alert("Impossible d'envoyer : email client manquant.");
+      notify("warning", "Impossible d'envoyer : email client manquant.");
       return;
     }
 
@@ -2829,24 +3010,24 @@ export default function Dashboard({
 
     if (!response.ok) {
       console.error(data);
-      alert(apiErrorMessage(data, "Erreur lors de l'envoi de la facture."));
+      notify("error", apiErrorMessage(data, "Erreur lors de l'envoi de la facture."));
       return;
     }
 
     if (data.testFallback && !data.sentToOriginalRecipient) {
-      alert(data.warning || "Email redirigé vers l'adresse de test Resend.");
+      notify("warning", data.warning || "Email redirigé vers l'adresse de test Resend.");
       return;
     }
 
     await chargerFactures();
-    alert("Facture envoyée par email.");
+    notify("success", "Facture envoyée par email.");
   }
 
   async function copierLienPaiementFacture(f: Facture) {
     if (!f.id) return;
 
     if (f.statut === "Payée") {
-      alert("Cette facture est déjà payée.");
+      notify("info", "Cette facture est déjà payée.");
       return;
     }
 
@@ -2863,12 +3044,12 @@ export default function Dashboard({
 
     if (!response.ok || !data.url) {
       console.error(data);
-      alert(apiErrorMessage(data, "Impossible de générer le lien de paiement."));
+      notify("error", apiErrorMessage(data, "Impossible de générer le lien de paiement."));
       return;
     }
 
     await navigator.clipboard.writeText(String(data.url));
-    alert("Lien de paiement copié.");
+    notify("success", "Lien de paiement copié.");
   }
 
   async function telechargerPDF(d: Devis) {
@@ -3038,7 +3219,10 @@ export default function Dashboard({
 
   async function telechargerPreuveAcceptationPDF(d: Devis) {
     if (!d.signataireNom && !d.dateAcceptation && d.statut !== "Accepté") {
-      alert("La preuve d'acceptation est disponible après acceptation du devis.");
+      notify(
+        "info",
+        "La preuve d'acceptation est disponible après acceptation du devis."
+      );
       return;
     }
 
@@ -3610,61 +3794,70 @@ export default function Dashboard({
               </thead>
 
               <tbody>
-                {factures.map((f) => (
-                  <tr key={f.id} className="border-b border-slate-800/70">
-                    <td className="py-3">{f.numero}</td>
-                    <td>{f.client}</td>
-                    <td>{f.lignes?.length || 0}</td>
-                    <td>{f.totalHT.toFixed(2)} €</td>
-                    <td>{f.totalTTC.toFixed(2)} €</td>
-                    <td>{f.statut}</td>
-                    <td>
-                      <div className="text-sm">
-                        <p className={f.statut === "Payée" ? "text-emerald-300" : "text-amber-300"}>
-                          {f.statut === "Payée" ? "Payée" : "À régler"}
-                        </p>
-                        {f.dateEcheance && (
-                          <p className="mt-1 text-slate-400">
-                            Échéance {formatDateTime(f.dateEcheance)}
+                {factures.length === 0 ? (
+                  <EmptyTableRow
+                    colSpan={9}
+                    title="Aucune facture."
+                    description="Transformez un devis accepté en facture pour suivre le règlement et envoyer un lien de paiement."
+                    actionLabel="Voir les devis"
+                    onAction={() => setOnglet("devis")}
+                  />
+                ) : (
+                  factures.map((f) => (
+                    <tr key={f.id} className="border-b border-slate-800/70">
+                      <td className="py-3">{f.numero}</td>
+                      <td>{f.client}</td>
+                      <td>{f.lignes?.length || 0}</td>
+                      <td>{f.totalHT.toFixed(2)} €</td>
+                      <td>{f.totalTTC.toFixed(2)} €</td>
+                      <td>{f.statut}</td>
+                      <td>
+                        <div className="text-sm">
+                          <p className={f.statut === "Payée" ? "text-emerald-300" : "text-amber-300"}>
+                            {f.statut === "Payée" ? "Payée" : "À régler"}
                           </p>
+                          {f.dateEcheance && (
+                            <p className="mt-1 text-slate-400">
+                              Échéance {formatDateTime(f.dateEcheance)}
+                            </p>
+                          )}
+                          {f.datePaiement && (
+                            <p className="mt-1 text-slate-400">
+                              Payée le {formatDateTime(f.datePaiement)}
+                            </p>
+                          )}
+                          {Boolean(f.montantPaye) && (
+                            <p className="mt-1 text-slate-400">
+                              {formatEuro(Number(f.montantPaye))}
+                            </p>
+                          )}
+                        </div>
+                      </td>
+                      <td>{statutEFactureLabel(f.statutEFacture)}</td>
+                      <td className="flex flex-wrap gap-2 py-3">
+                        {f.statut !== "Payée" && (
+                          <button
+                            onClick={() => marquerFacturePayee(f)}
+                            className="rounded-lg border border-green-500 px-3 py-2 text-green-300"
+                          >
+                            Marquer payée
+                          </button>
                         )}
-                        {f.datePaiement && (
-                          <p className="mt-1 text-slate-400">
-                            Payée le {formatDateTime(f.datePaiement)}
-                          </p>
-                        )}
-                        {Boolean(f.montantPaye) && (
-                          <p className="mt-1 text-slate-400">
-                            {formatEuro(Number(f.montantPaye))}
-                          </p>
-                        )}
-                      </div>
-                    </td>
-                    <td>{statutEFactureLabel(f.statutEFacture)}</td>
-                    <td className="flex flex-wrap gap-2 py-3">
-                      {f.statut !== "Payée" && (
+
                         <button
-                          onClick={() => marquerFacturePayee(f)}
-                          className="rounded-lg border border-green-500 px-3 py-2 text-green-300"
+                          onClick={() => telechargerFacturePDF(f)}
+                          className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200"
                         >
-                          Marquer payée
+                          PDF détaillé
                         </button>
-                      )}
 
-	                      <button
-	                        onClick={() => telechargerFacturePDF(f)}
-	                        className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200"
-	                      >
-	                        PDF détaillé
-	                      </button>
-
-	                      <button
-	                        onClick={() => envoyerFactureParEmail(f)}
-	                        disabled={factureSendingId === f.id}
-	                        className="rounded-lg border border-blue-500 px-3 py-2 text-blue-300 disabled:opacity-50"
-	                      >
-	                        {factureSendingId === f.id ? "Envoi..." : "Envoyer"}
-	                      </button>
+                        <button
+                          onClick={() => envoyerFactureParEmail(f)}
+                          disabled={factureSendingId === f.id}
+                          className="rounded-lg border border-blue-500 px-3 py-2 text-blue-300 disabled:opacity-50"
+                        >
+                          {factureSendingId === f.id ? "Envoi..." : "Envoyer"}
+                        </button>
 
                         {f.statut !== "Payée" && (
                           <button
@@ -3678,15 +3871,16 @@ export default function Dashboard({
                           </button>
                         )}
 
-	                      <button
-                        onClick={() => supprimerFacture(f)}
-                        className="rounded-lg border border-red-500 px-3 py-2 text-red-300"
-                      >
-                        Supprimer
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                        <button
+                          onClick={() => supprimerFacture(f)}
+                          className="rounded-lg border border-red-500 px-3 py-2 text-red-300"
+                        >
+                          Supprimer
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </DataTable>
           </section>
@@ -3737,22 +3931,30 @@ export default function Dashboard({
                 </tr>
               </thead>
               <tbody>
-                {clients.map((c) => (
-                  <tr key={c.id} className="border-b border-slate-800/70">
-                    <td className="py-3">{c.nom}</td>
-                    <td>{c.societe}</td>
-                    <td>{c.email}</td>
-                    <td>{c.telephone}</td>
-                    <td>{c.typeClient}</td>
-                    <td>{c.sirenClient || c.siretClient || "-"}</td>
-                    <td>{c.ville}</td>
-                    <td>
-                      <button onClick={() => supprimerClient(c.id)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
-                        Supprimer
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {clients.length === 0 ? (
+                  <EmptyTableRow
+                    colSpan={8}
+                    title="Aucun client."
+                    description="Ajoutez votre premier client pour remplir les devis plus vite et éviter les ressaisies."
+                  />
+                ) : (
+                  clients.map((c) => (
+                    <tr key={c.id} className="border-b border-slate-800/70">
+                      <td className="py-3">{c.nom}</td>
+                      <td>{c.societe}</td>
+                      <td>{c.email}</td>
+                      <td>{c.telephone}</td>
+                      <td>{c.typeClient}</td>
+                      <td>{c.sirenClient || c.siretClient || "-"}</td>
+                      <td>{c.ville}</td>
+                      <td>
+                        <button onClick={() => supprimerClient(c.id)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
+                          Supprimer
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </DataTable>
           </section>
@@ -3787,19 +3989,27 @@ export default function Dashboard({
                 </tr>
               </thead>
               <tbody>
-                {produits.map((p) => (
-                  <tr key={p.id} className="border-b border-slate-800/70">
-                    <td className="py-3">{p.reference}</td>
-                    <td>{p.nom}</td>
-                    <td>{p.designation}</td>
-                    <td>{p.prixUnitaire.toFixed(2)} €</td>
-                    <td>
-                      <button onClick={() => supprimerProduit(p.id)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
-                        Supprimer
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {produits.length === 0 ? (
+                  <EmptyTableRow
+                    colSpan={5}
+                    title="Aucun produit ou prestation."
+                    description="Ajoutez vos prestations récurrentes pour créer vos futurs devis en quelques clics."
+                  />
+                ) : (
+                  produits.map((p) => (
+                    <tr key={p.id} className="border-b border-slate-800/70">
+                      <td className="py-3">{p.reference}</td>
+                      <td>{p.nom}</td>
+                      <td>{p.designation}</td>
+                      <td>{p.prixUnitaire.toFixed(2)} €</td>
+                      <td>
+                        <button onClick={() => supprimerProduit(p.id)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
+                          Supprimer
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </DataTable>
           </section>
@@ -4069,6 +4279,45 @@ export default function Dashboard({
                     className="hidden"
                   />
                 </label>
+              </div>
+
+              <div className="mt-6 grid grid-cols-1 gap-4 lg:grid-cols-3">
+                {[
+                  [
+                    "1. Importer l'historique",
+                    "Déposez un CSV ou XLSX issu d'anciennes factures, d'un export client ou d'un catalogue.",
+                  ],
+                  [
+                    "2. Vérifier l'aperçu",
+                    "Contrôlez les colonnes détectées, les lignes importables, les doublons et les erreurs.",
+                  ],
+                  [
+                    "3. Réutiliser les prix",
+                    "Retrouvez les derniers prix, la médiane et les ventes similaires pendant la création d'un devis.",
+                  ],
+                ].map(([title, description]) => (
+                  <div
+                    key={title}
+                    className="rounded-2xl border border-blue-500/20 bg-blue-500/10 p-5"
+                  >
+                    <p className="font-bold text-blue-100">{title}</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-300">
+                      {description}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/60 p-5">
+                <p className="text-sm font-semibold uppercase tracking-[0.16em] text-slate-500">
+                  Ce que vous obtenez
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">
+                  Un catalogue reconstruit, une liste de clients historiques et
+                  des suggestions de prix justifiées par les ventes passées.
+                  DevisFlow ne remplit jamais un prix automatiquement : vous
+                  gardez la validation finale.
+                </p>
               </div>
 
               <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-4">
@@ -4432,12 +4681,11 @@ export default function Dashboard({
                   </thead>
                   <tbody>
                     {commercialMemoryLines.length === 0 ? (
-                      <tr className="border-b border-slate-800/70">
-                        <td className="py-4 text-slate-400" colSpan={6}>
-                          Aucun historique importé. Commence par un CSV ou XLSX
-                          contenant au minimum une désignation et un prix.
-                        </td>
-                      </tr>
+                      <EmptyTableRow
+                        colSpan={6}
+                        title="Aucun historique importé."
+                        description="Importez quelques anciennes factures ou exports pour reconstruire les produits vendus, les clients historiques et les prix déjà pratiqués."
+                      />
                     ) : (
                       commercialMemoryLines.slice(0, 80).map((line) => (
                         <tr key={line.id || line.fingerprint} className="border-b border-slate-800/70">
@@ -4504,32 +4752,40 @@ export default function Dashboard({
                     </tr>
                   </thead>
                   <tbody>
-                    {catalogueMemoire.slice(0, 80).map((item) => (
-                      <tr key={item.key} className="border-b border-slate-800/70">
-                        <td className="py-3">
-                          <p className="font-medium text-white">{item.nom}</p>
-                          <p className="text-xs text-slate-400">
-                            {item.reference || item.categorie || "Sans référence"}
-                          </p>
-                        </td>
-                        <td>{item.ventes}</td>
-                        <td>
-                          {item.premiereDate
-                            ? `${formatEuro(item.premierPrix)} · ${item.premiereDate}`
-                            : "-"}
-                        </td>
-                        <td>{formatEuro(item.prixMin)}</td>
-                        <td className="font-semibold text-white">
-                          {formatEuro(item.prixMedian)}
-                        </td>
-                        <td>{formatEuro(item.prixMax)}</td>
-                        <td>
-                          {item.derniereDate
-                            ? `${formatEuro(item.dernierPrix)} · ${item.derniereDate}`
-                            : "-"}
-                        </td>
-                      </tr>
-                    ))}
+                    {catalogueMemoire.length === 0 ? (
+                      <EmptyTableRow
+                        colSpan={7}
+                        title="Aucun catalogue reconstruit."
+                        description="Le catalogue reconstruit apparaît après import d'un historique contenant des désignations et des prix."
+                      />
+                    ) : (
+                      catalogueMemoire.slice(0, 80).map((item) => (
+                        <tr key={item.key} className="border-b border-slate-800/70">
+                          <td className="py-3">
+                            <p className="font-medium text-white">{item.nom}</p>
+                            <p className="text-xs text-slate-400">
+                              {item.reference || item.categorie || "Sans référence"}
+                            </p>
+                          </td>
+                          <td>{item.ventes}</td>
+                          <td>
+                            {item.premiereDate
+                              ? `${formatEuro(item.premierPrix)} · ${item.premiereDate}`
+                              : "-"}
+                          </td>
+                          <td>{formatEuro(item.prixMin)}</td>
+                          <td className="font-semibold text-white">
+                            {formatEuro(item.prixMedian)}
+                          </td>
+                          <td>{formatEuro(item.prixMax)}</td>
+                          <td>
+                            {item.derniereDate
+                              ? `${formatEuro(item.dernierPrix)} · ${item.derniereDate}`
+                              : "-"}
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </DataTable>
               </div>
@@ -4555,37 +4811,45 @@ export default function Dashboard({
                     </tr>
                   </thead>
                   <tbody>
-                    {clientsMemoire.slice(0, 80).map((item) => (
-                      <tr key={item.key} className="border-b border-slate-800/70">
-                        <td className="py-3">
-                          <p className="font-medium text-white">
-                            {item.societe || item.nom || "Client historique"}
-                          </p>
-                          {item.email && (
-                            <p className="text-xs text-slate-400">{item.email}</p>
-                          )}
-                        </td>
-                        <td>{item.commandes}</td>
-                        <td>{formatEuro(item.chiffreAffairesHT)}</td>
-                        <td>{formatEuro(item.panierMoyenHT)}</td>
-                        <td>{item.derniereCommande || "-"}</td>
-                        <td className="max-w-sm text-sm text-slate-300">
-                          {item.produitsPrincipaux.join(" · ") || "-"}
-                        </td>
-                        <td className="max-w-sm text-xs leading-5 text-slate-400">
-                          {item.derniersPrix.length > 0
-                            ? item.derniersPrix
-                                .map(
-                                  (price) =>
-                                    `${price.produit}: ${formatEuro(price.prix)}${
-                                      price.date ? ` le ${price.date}` : ""
-                                    }`
-                                )
-                                .join(" · ")
-                            : "-"}
-                        </td>
-                      </tr>
-                    ))}
+                    {clientsMemoire.length === 0 ? (
+                      <EmptyTableRow
+                        colSpan={7}
+                        title="Aucun client historique."
+                        description="Après import, DevisFlow regroupe les commandes par client pour retrouver les habitudes et les derniers prix pratiqués."
+                      />
+                    ) : (
+                      clientsMemoire.slice(0, 80).map((item) => (
+                        <tr key={item.key} className="border-b border-slate-800/70">
+                          <td className="py-3">
+                            <p className="font-medium text-white">
+                              {item.societe || item.nom || "Client historique"}
+                            </p>
+                            {item.email && (
+                              <p className="text-xs text-slate-400">{item.email}</p>
+                            )}
+                          </td>
+                          <td>{item.commandes}</td>
+                          <td>{formatEuro(item.chiffreAffairesHT)}</td>
+                          <td>{formatEuro(item.panierMoyenHT)}</td>
+                          <td>{item.derniereCommande || "-"}</td>
+                          <td className="max-w-sm text-sm text-slate-300">
+                            {item.produitsPrincipaux.join(" · ") || "-"}
+                          </td>
+                          <td className="max-w-sm text-xs leading-5 text-slate-400">
+                            {item.derniersPrix.length > 0
+                              ? item.derniersPrix
+                                  .map(
+                                    (price) =>
+                                      `${price.produit}: ${formatEuro(price.prix)}${
+                                        price.date ? ` le ${price.date}` : ""
+                                      }`
+                                  )
+                                  .join(" · ")
+                              : "-"}
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </DataTable>
               </div>
@@ -4771,11 +5035,11 @@ export default function Dashboard({
                 </thead>
                 <tbody>
                   {relanceHistory.length === 0 ? (
-                    <tr className="border-b border-slate-800/70">
-                      <td className="py-4 text-slate-400" colSpan={5}>
-                        Aucune relance automatique enregistrée.
-                      </td>
-                    </tr>
+                    <EmptyTableRow
+                      colSpan={5}
+                      title="Aucune relance automatique envoyée."
+                      description="L'historique se remplira dès que le cron enverra une relance automatique. Les relances manuelles restent disponibles depuis les devis."
+                    />
                   ) : (
                     relanceHistory.map((item) => (
                       <tr key={item.id || `${item.documentId}-${item.ruleKey}`} className="border-b border-slate-800/70">
@@ -5042,7 +5306,7 @@ export default function Dashboard({
                         }
                       />
 
-                      <button onClick={() => setLignes(lignes.filter((_, i) => i !== index))} className="rounded-xl border border-red-500 px-4 py-2 text-red-300">
+                      <button onClick={() => supprimerLigneDevis(index)} className="rounded-xl border border-red-500 px-4 py-2 text-red-300">
                         Supprimer ligne
                       </button>
                     </div>
@@ -5101,110 +5365,123 @@ export default function Dashboard({
                 </thead>
 
                 <tbody>
-                  {devisAvecStatutAuto.map((d) => (
-                    <tr key={d.numero} className="border-b border-slate-800/70">
-                      <td className="py-3">{d.numero}</td>
-                      <td>{d.client}</td>
-                      <td>{totalHT(d.lignes, d.portHT).toFixed(2)} €</td>
-                      <td>{d.statutAffiche}</td>
-                      <td className="min-w-[260px] py-3">
-                        <p className="text-sm font-semibold text-white">
-                          {pipelineStage(d)}
-                        </p>
-                        {relanceSuggestion(d) && (
-                          <p className="mt-1 text-xs font-semibold text-amber-300">
-                            {relanceSuggestion(d)}
+                  {devisAvecStatutAuto.length === 0 ? (
+                    <EmptyTableRow
+                      colSpan={6}
+                      title="Aucun devis."
+                      description="Créez votre premier devis pour envoyer un lien client, suivre les vues et obtenir une acceptation en ligne."
+                      actionLabel="Créer un devis"
+                      onAction={() => {
+                        resetForm();
+                        setShowForm(true);
+                      }}
+                    />
+                  ) : (
+                    devisAvecStatutAuto.map((d) => (
+                      <tr key={d.numero} className="border-b border-slate-800/70">
+                        <td className="py-3">{d.numero}</td>
+                        <td>{d.client}</td>
+                        <td>{totalHT(d.lignes, d.portHT).toFixed(2)} €</td>
+                        <td>{d.statutAffiche}</td>
+                        <td className="min-w-[260px] py-3">
+                          <p className="text-sm font-semibold text-white">
+                            {pipelineStage(d)}
                           </p>
-                        )}
-                        <div className="mt-2 grid gap-1">
-                          {timelineSteps(d).map((step) => (
-                            <div
-                              key={step.label}
-                              className="flex items-start gap-2 text-xs text-slate-400"
-                            >
-                              <span
-                                className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
-                                  step.done ? "bg-emerald-400" : "bg-slate-700"
-                                }`}
-                              />
-                              <span>
+                          {relanceSuggestion(d) && (
+                            <p className="mt-1 text-xs font-semibold text-amber-300">
+                              {relanceSuggestion(d)}
+                            </p>
+                          )}
+                          <div className="mt-2 grid gap-1">
+                            {timelineSteps(d).map((step) => (
+                              <div
+                                key={step.label}
+                                className="flex items-start gap-2 text-xs text-slate-400"
+                              >
                                 <span
-                                  className={
-                                    step.done ? "text-slate-200" : "text-slate-400"
-                                  }
-                                >
-                                  {step.label}
-                                </span>
-                                {step.detail && (
-                                  <span className="ml-1 text-slate-400">
-                                    {step.detail}
+                                  className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                                    step.done ? "bg-emerald-400" : "bg-slate-700"
+                                  }`}
+                                />
+                                <span>
+                                  <span
+                                    className={
+                                      step.done ? "text-slate-200" : "text-slate-400"
+                                    }
+                                  >
+                                    {step.label}
                                   </span>
-                                )}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="flex flex-wrap gap-2 py-3">
-                        {d.statutAffiche === "Brouillon" && (
-                          <button onClick={() => marquerEnvoye(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
-                            Envoyer
+                                  {step.detail && (
+                                    <span className="ml-1 text-slate-400">
+                                      {step.detail}
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="flex flex-wrap gap-2 py-3">
+                          {d.statutAffiche === "Brouillon" && (
+                            <button onClick={() => marquerEnvoye(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
+                              Envoyer
+                            </button>
+                          )}
+
+                          <button onClick={() => envoyerParEmail(d)} disabled={sendingId === d.id} className="rounded-lg border border-blue-500 px-3 py-2 text-blue-300 disabled:opacity-50">
+                            {sendingId === d.id ? "Envoi..." : "Envoyer"}
                           </button>
-                        )}
 
-                        <button onClick={() => envoyerParEmail(d)} disabled={sendingId === d.id} className="rounded-lg border border-blue-500 px-3 py-2 text-blue-300 disabled:opacity-50">
-                          {sendingId === d.id ? "Envoi..." : "Envoyer"}
-                        </button>
-
-                        <button onClick={() => relancerParEmail(d)} disabled={relanceSendingId === d.id} className="rounded-lg border border-yellow-500 px-3 py-2 text-yellow-300 disabled:opacity-50">
-                          {relanceSendingId === d.id ? "Relance..." : "Relancer par email"}
-                        </button>
-
-                        <button onClick={() => copierLienClient(d)} className="rounded-lg border border-violet-500 px-3 py-2 text-violet-300">
-                          Copier lien
-                        </button>
-
-                        <button onClick={() => transformerEnFacture(d)} className="rounded-lg border border-green-500 px-3 py-2 text-green-300">
-                          Transformer en facture
-                        </button>
-
-                        {d.statutAffiche === "À relancer" && (
-                          <button onClick={() => relancer(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
-                            Relancer sans email
+                          <button onClick={() => relancerParEmail(d)} disabled={relanceSendingId === d.id} className="rounded-lg border border-yellow-500 px-3 py-2 text-yellow-300 disabled:opacity-50">
+                            {relanceSendingId === d.id ? "Relance..." : "Relancer par email"}
                           </button>
-                        )}
 
-                        <button onClick={() => marquerAccepte(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
-                          Accepté
-                        </button>
-
-                        <button onClick={() => marquerRefuse(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
-                          Refusé
-                        </button>
-
-                        <button onClick={() => telechargerPDF(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
-                          PDF
-                        </button>
-
-                        {(d.statut === "Accepté" || d.signataireNom) && (
-                          <button
-                            onClick={() => telechargerPreuveAcceptationPDF(d)}
-                            className="rounded-lg border border-emerald-500 px-3 py-2 text-emerald-300"
-                          >
-                            Preuve
+                          <button onClick={() => copierLienClient(d)} className="rounded-lg border border-violet-500 px-3 py-2 text-violet-300">
+                            Copier lien
                           </button>
-                        )}
 
-                        <button onClick={() => modifierDevis(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
-                          Modifier
-                        </button>
+                          <button onClick={() => transformerEnFacture(d)} className="rounded-lg border border-green-500 px-3 py-2 text-green-300">
+                            Transformer en facture
+                          </button>
 
-                        <button onClick={() => supprimerDevis(d)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
-                          Supprimer
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                          {d.statutAffiche === "À relancer" && (
+                            <button onClick={() => relancer(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
+                              Relancer sans email
+                            </button>
+                          )}
+
+                          <button onClick={() => marquerAccepte(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
+                            Accepté
+                          </button>
+
+                          <button onClick={() => marquerRefuse(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
+                            Refusé
+                          </button>
+
+                          <button onClick={() => telechargerPDF(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
+                            PDF
+                          </button>
+
+                          {(d.statut === "Accepté" || d.signataireNom) && (
+                            <button
+                              onClick={() => telechargerPreuveAcceptationPDF(d)}
+                              className="rounded-lg border border-emerald-500 px-3 py-2 text-emerald-300"
+                            >
+                              Preuve
+                            </button>
+                          )}
+
+                          <button onClick={() => modifierDevis(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
+                            Modifier
+                          </button>
+
+                          <button onClick={() => supprimerDevis(d)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
+                            Supprimer
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </DataTable>
             </section>
@@ -5213,7 +5490,112 @@ export default function Dashboard({
           </div>
         </div>
       </div>
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+      <ConfirmDialog
+        dialog={confirmDialog}
+        loading={confirmLoading}
+        onCancel={() => setConfirmDialog(null)}
+        onConfirm={confirmCurrentAction}
+      />
     </main>
+  );
+}
+
+function ToastStack({
+  toasts,
+  onDismiss,
+}: {
+  toasts: ToastMessage[];
+  onDismiss: (id: number) => void;
+}) {
+  if (toasts.length === 0) return null;
+
+  return (
+    <div className="fixed right-4 top-4 z-50 flex w-[min(420px,calc(100vw-2rem))] flex-col gap-3">
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          className={`rounded-2xl border p-4 shadow-2xl backdrop-blur ${
+            toast.variant === "success"
+              ? "border-emerald-400/30 bg-emerald-950/90 text-emerald-50"
+              : toast.variant === "error"
+              ? "border-rose-400/30 bg-rose-950/90 text-rose-50"
+              : toast.variant === "warning"
+              ? "border-amber-400/30 bg-amber-950/90 text-amber-50"
+              : "border-blue-400/30 bg-blue-950/90 text-blue-50"
+          }`}
+          role="status"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <p className="whitespace-pre-line text-sm leading-6">{toast.message}</p>
+            <button
+              type="button"
+              onClick={() => onDismiss(toast.id)}
+              className="rounded-lg px-2 text-lg leading-none text-white/70 hover:bg-white/10 hover:text-white"
+              aria-label="Fermer la notification"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  dialog,
+  loading,
+  onCancel,
+  onConfirm,
+}: {
+  dialog: ConfirmDialogState | null;
+  loading: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  if (!dialog) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm">
+      <section
+        className="w-full max-w-lg rounded-3xl border border-slate-800 bg-slate-900 p-6 text-white shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
+      >
+        <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">
+          Confirmation
+        </p>
+        <h2 id="confirm-dialog-title" className="mt-3 text-2xl font-black">
+          {dialog.title}
+        </h2>
+        <p className="mt-3 leading-7 text-slate-300">{dialog.description}</p>
+
+        <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={loading}
+            className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-semibold text-slate-200 hover:bg-slate-800 disabled:opacity-50"
+          >
+            Annuler
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={loading}
+            className={`rounded-xl px-5 py-3 text-sm font-semibold text-white disabled:opacity-50 ${
+              dialog.tone === "danger"
+                ? "bg-rose-600 hover:bg-rose-500"
+                : "bg-blue-600 hover:bg-blue-500"
+            }`}
+          >
+            {loading ? "Traitement..." : dialog.confirmLabel}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -5515,7 +5897,7 @@ function PipelineColumn({
       <div className="space-y-3">
         {devis.length === 0 && (
           <p className="rounded-xl border border-dashed border-slate-800 p-4 text-sm text-slate-400">
-            Aucun devis
+            Aucun devis dans cette étape pour le moment.
           </p>
         )}
 
@@ -5556,6 +5938,42 @@ function DataTable({ children }: { children: React.ReactNode }) {
     <div className="mt-8 overflow-x-auto">
       <table className="w-full text-left text-sm text-slate-200">{children}</table>
     </div>
+  );
+}
+
+function EmptyTableRow({
+  colSpan,
+  title,
+  description,
+  actionLabel,
+  onAction,
+}: {
+  colSpan: number;
+  title: string;
+  description: string;
+  actionLabel?: string;
+  onAction?: () => void;
+}) {
+  return (
+    <tr>
+      <td colSpan={colSpan} className="py-8">
+        <div className="rounded-2xl border border-dashed border-slate-700 bg-slate-950/60 p-6 text-center">
+          <p className="text-base font-bold text-white">{title}</p>
+          <p className="mx-auto mt-2 max-w-xl text-sm leading-6 text-slate-400">
+            {description}
+          </p>
+          {actionLabel && onAction && (
+            <button
+              type="button"
+              onClick={onAction}
+              className="mt-5 rounded-xl bg-blue-600 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-500"
+            >
+              {actionLabel}
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
   );
 }
 
