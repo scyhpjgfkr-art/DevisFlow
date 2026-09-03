@@ -2,7 +2,11 @@ import { Resend } from "resend";
 import { NextResponse } from "next/server";
 import { getResendFromEmail, sendTransactionalEmail } from "@/lib/email-delivery";
 import { buildPremiumDocumentEmail } from "@/lib/email-templates";
-import { getErrorMessage, requireSupabaseUser } from "@/lib/server-utils";
+import {
+  getErrorMessage,
+  getTrustedDevisUrl,
+  requireSupabaseUser,
+} from "@/lib/server-utils";
 
 type LigneEmail = {
   reference?: string;
@@ -68,6 +72,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Email client manquant" }, { status: 400 });
     }
 
+    const trustedAcceptUrl = getTrustedDevisUrl(acceptUrl, request);
+
+    if (acceptUrl && !trustedAcceptUrl) {
+      return NextResponse.json(
+        { error: "Lien client invalide" },
+        { status: 400 }
+      );
+    }
+
     const delivery = await sendTransactionalEmail(resend, {
       from: getResendFromEmail(),
       to: email,
@@ -84,8 +97,10 @@ export async function POST(request: Request) {
         totalHT,
         totalTTC,
         lignes,
-        ctaLabel: acceptUrl ? "Consulter et répondre au devis" : undefined,
-        ctaUrl: acceptUrl,
+        ctaLabel: trustedAcceptUrl
+          ? "Consulter et répondre au devis"
+          : undefined,
+        ctaUrl: trustedAcceptUrl,
         acompteTTC,
         note: "Le lien permet de conserver une réponse datée avec le nom du signataire.",
       }),

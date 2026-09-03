@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import { getErrorMessage, requireSupabaseUser } from "@/lib/server-utils";
+import {
+  getAppOrigin,
+  getErrorMessage,
+  requireSupabaseUser,
+} from "@/lib/server-utils";
 
 type CheckoutPayload = {
   factureId?: string;
@@ -83,10 +87,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const origin =
-      request.headers.get("origin") ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      "http://localhost:3000";
+    const origin = getAppOrigin(request);
 
     const amountInCents = Math.round(Number(totalTTC) * 100);
 

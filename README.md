@@ -88,6 +88,11 @@ npm run lint
 npm run build
 ```
 
+Avant le premier pilote, appliquer également la migration additive
+`supabase/pilot_readiness.sql` dans Supabase. Elle ajoute le suivi de la
+dernière relance et verrouille le contenu d'un devis après acceptation ou
+refus.
+
 ## Sécurité
 
 - Les routes sensibles utilisent la session Supabase.

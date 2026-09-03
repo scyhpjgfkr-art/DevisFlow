@@ -4,7 +4,11 @@ import { Resend } from "resend";
 import Stripe from "stripe";
 import { getResendFromEmail, sendTransactionalEmail } from "@/lib/email-delivery";
 import { buildPremiumDocumentEmail } from "@/lib/email-templates";
-import { getErrorMessage, requireSupabaseUser } from "@/lib/server-utils";
+import {
+  getAppOrigin,
+  getErrorMessage,
+  requireSupabaseUser,
+} from "@/lib/server-utils";
 
 type SendFacturePayload = {
   factureId?: string;
@@ -116,10 +120,7 @@ export async function POST(request: Request) {
     const totalTTC = Number(facture.total_ttc || 0);
 
     if (stripeSecretKey && facture.statut !== "Payée" && totalTTC > 0) {
-      const origin =
-        request.headers.get("origin") ||
-        process.env.NEXT_PUBLIC_APP_URL ||
-        "http://localhost:3000";
+      const origin = getAppOrigin(request);
       const stripe = new Stripe(stripeSecretKey);
       const session = await stripe.checkout.sessions.create({
         mode: "payment",
