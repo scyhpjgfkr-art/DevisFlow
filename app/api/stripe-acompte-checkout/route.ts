@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import { getErrorMessage } from "@/lib/server-utils";
+import { getAppOrigin, getErrorMessage } from "@/lib/server-utils";
 
 type CheckoutAcomptePayload = {
   token?: string;
@@ -155,10 +155,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const origin =
-      request.headers.get("origin") ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      "http://localhost:3000";
+    const origin = getAppOrigin(request);
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",

@@ -2,7 +2,11 @@ import { Resend } from "resend";
 import { NextResponse } from "next/server";
 import { getResendFromEmail, sendTransactionalEmail } from "@/lib/email-delivery";
 import { buildPremiumDocumentEmail } from "@/lib/email-templates";
-import { getErrorMessage, requireSupabaseUser } from "@/lib/server-utils";
+import {
+  getErrorMessage,
+  getTrustedDevisUrl,
+  requireSupabaseUser,
+} from "@/lib/server-utils";
 
 type RelancePayload = {
   client?: string;
@@ -52,6 +56,15 @@ export async function POST(request: Request) {
       );
     }
 
+    const trustedAcceptUrl = getTrustedDevisUrl(acceptUrl, request);
+
+    if (acceptUrl && !trustedAcceptUrl) {
+      return NextResponse.json(
+        { error: "Lien client invalide" },
+        { status: 400 }
+      );
+    }
+
     const delivery = await sendTransactionalEmail(resend, {
       from: getResendFromEmail(),
       to: email,
@@ -66,8 +79,8 @@ export async function POST(request: Request) {
           "Nous revenons vers vous concernant ce devis. Vous pouvez le consulter, le valider ou répondre directement à cet email si vous avez une question.",
         totalHT,
         totalTTC,
-        ctaLabel: acceptUrl ? "Consulter le devis" : undefined,
-        ctaUrl: acceptUrl,
+        ctaLabel: trustedAcceptUrl ? "Consulter le devis" : undefined,
+        ctaUrl: trustedAcceptUrl,
         note: "Ce rappel est envoyé pour faciliter votre prise de décision.",
       }),
     }, "relance-devis");

@@ -428,6 +428,23 @@ const DEFAULT_CONDITIONS =
   "Le solde est dû selon les conditions de règlement convenues.\n" +
   "Toute prestation hors périmètre fera l'objet d'un devis complémentaire.";
 
+function isDevisImmutable(devis: Devis) {
+  return (
+    Boolean(devis.responseLockedAt) ||
+    devis.statut === "Accepté" ||
+    devis.statut === "Refusé"
+  );
+}
+
+function hasOnlineAcceptanceProof(devis: Devis) {
+  return Boolean(
+    devis.statut === "Accepté" &&
+      devis.signataireNom &&
+      devis.responseLockedAt &&
+      (devis.dateAcceptation || devis.dateReponse)
+  );
+}
+
 const DEFAULT_RELANCE_SETTINGS: RelanceSettings = {
   devisNonVuEnabled: true,
   devisNonVuDays: 2,
@@ -1899,8 +1916,7 @@ export default function Dashboard({
       return;
     }
 
-    const extension = commercialMemoryFileName.split(".").pop()?.toLowerCase();
-    const sourceType = extension === "xlsx" ? "xlsx" : "csv";
+    const sourceType = "csv";
     const { data: importData, error: importError } = await supabase
       .from("historique_imports")
       .insert({
@@ -2705,8 +2721,16 @@ export default function Dashboard({
   async function enregistrerDevis() {
     if (!preview) return;
 
+    if (preview.id && isDevisImmutable(preview)) {
+      notify(
+        "warning",
+        "Ce devis a déjà reçu une réponse et ne peut plus être modifié. Dupliquez-le pour créer une nouvelle version."
+      );
+      return;
+    }
+
     if (preview.id) {
-      await supabase
+      const { error: updateError } = await supabase
         .from("devis")
         .update({
           client: preview.client,
@@ -2733,9 +2757,24 @@ export default function Dashboard({
         })
         .eq("id", preview.id);
 
-      await supabase.from("lignes_devis").delete().eq("devis_id", preview.id);
+      if (updateError) {
+        console.error(updateError);
+        notify("error", "Impossible de modifier le devis.");
+        return;
+      }
 
-      await supabase.from("lignes_devis").insert(
+      const { error: deleteLinesError } = await supabase
+        .from("lignes_devis")
+        .delete()
+        .eq("devis_id", preview.id);
+
+      if (deleteLinesError) {
+        console.error(deleteLinesError);
+        notify("error", "Impossible de mettre à jour les lignes du devis.");
+        return;
+      }
+
+      const { error: insertLinesError } = await supabase.from("lignes_devis").insert(
         preview.lignes.map((l) => ({
           devis_id: preview.id,
           reference: l.reference,
@@ -2744,6 +2783,12 @@ export default function Dashboard({
           prix_unitaire: l.prixUnitaire,
         }))
       );
+
+      if (insertLinesError) {
+        console.error(insertLinesError);
+        notify("error", "Impossible d'enregistrer les lignes du devis.");
+        return;
+      }
     } else {
       const { data, error } = await supabase
         .from("devis")
@@ -2784,7 +2829,7 @@ export default function Dashboard({
         return;
       }
 
-      await supabase.from("lignes_devis").insert(
+      const { error: insertLinesError } = await supabase.from("lignes_devis").insert(
         preview.lignes.map((l) => ({
           devis_id: data.id,
           reference: l.reference,
@@ -2793,6 +2838,15 @@ export default function Dashboard({
           prix_unitaire: l.prixUnitaire,
         }))
       );
+
+      if (insertLinesError) {
+        console.error(insertLinesError);
+        notify(
+          "error",
+          "Le devis a été créé, mais ses lignes n'ont pas pu être enregistrées."
+        );
+        return;
+      }
     }
 
     await chargerDevis();
@@ -2801,6 +2855,14 @@ export default function Dashboard({
   }
 
   function modifierDevis(d: Devis) {
+    if (isDevisImmutable(d)) {
+      notify(
+        "info",
+        "Ce devis est verrouillé après réponse. Créez un nouveau devis pour proposer une modification."
+      );
+      return;
+    }
+
     setClient(d.client);
     setSociete(d.societe);
     setEmail(d.email);
@@ -2826,6 +2888,14 @@ export default function Dashboard({
 
   function supprimerDevis(d: Devis) {
     if (!d.id) return;
+
+    if (isDevisImmutable(d)) {
+      notify(
+        "warning",
+        "Un devis accepté ou refusé est conservé pour préserver la preuve de réponse."
+      );
+      return;
+    }
 
     requestConfirmation({
       title: "Supprimer ce devis ?",
@@ -3218,10 +3288,10 @@ export default function Dashboard({
   }
 
   async function telechargerPreuveAcceptationPDF(d: Devis) {
-    if (!d.signataireNom && !d.dateAcceptation && d.statut !== "Accepté") {
+    if (!hasOnlineAcceptanceProof(d)) {
       notify(
         "info",
-        "La preuve d'acceptation est disponible après acceptation du devis."
+        "La preuve est disponible uniquement après une acceptation client enregistrée depuis le lien sécurisé."
       );
       return;
     }
@@ -4084,7 +4154,7 @@ export default function Dashboard({
                 </span>
                 <input
                   type="file"
-                  accept=".csv,.xlsx"
+                  accept=".csv"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
                     if (file) void chargerFichierImport(file);
@@ -4093,8 +4163,8 @@ export default function Dashboard({
                   className="mt-3 block w-full text-sm text-slate-300 file:mr-4 file:rounded-xl file:border-0 file:bg-slate-950 file:px-4 file:py-2 file:font-semibold file:text-white"
                 />
                 <span className="mt-3 block text-xs text-slate-400">
-                  XLSX est affiché comme format cible, mais cette version importe le
-                  CSV pour rester légère et fiable sans dépendance navigateur.
+                  Exporte les fichiers Excel ou Google Sheets au format CSV avant
+                  l&apos;import.
                 </span>
               </label>
 
@@ -4267,10 +4337,10 @@ export default function Dashboard({
                 </div>
 
                 <label className="rounded-xl bg-[#2563eb] px-5 py-3 text-sm font-semibold text-white hover:bg-blue-700">
-                  Importer CSV/XLSX
+                  Importer un CSV
                   <input
                     type="file"
-                    accept=".csv,.xlsx"
+                    accept=".csv"
                     onChange={(event) => {
                       const file = event.target.files?.[0];
                       if (file) void chargerFichierMemoireCommerciale(file);
@@ -4285,7 +4355,7 @@ export default function Dashboard({
                 {[
                   [
                     "1. Importer l'historique",
-                    "Déposez un CSV ou XLSX issu d'anciennes factures, d'un export client ou d'un catalogue.",
+                    "Déposez un CSV issu d'anciennes factures, d'un export client ou d'un catalogue.",
                   ],
                   [
                     "2. Vérifier l'aperçu",
@@ -5462,7 +5532,7 @@ export default function Dashboard({
                             PDF
                           </button>
 
-                          {(d.statut === "Accepté" || d.signataireNom) && (
+                          {hasOnlineAcceptanceProof(d) && (
                             <button
                               onClick={() => telechargerPreuveAcceptationPDF(d)}
                               className="rounded-lg border border-emerald-500 px-3 py-2 text-emerald-300"
@@ -5471,11 +5541,21 @@ export default function Dashboard({
                             </button>
                           )}
 
-                          <button onClick={() => modifierDevis(d)} className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200">
+                          <button
+                            onClick={() => modifierDevis(d)}
+                            disabled={isDevisImmutable(d)}
+                            title={isDevisImmutable(d) ? "Devis verrouillé après réponse" : undefined}
+                            className="rounded-lg border border-slate-800 px-3 py-2 text-slate-200 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
                             Modifier
                           </button>
 
-                          <button onClick={() => supprimerDevis(d)} className="rounded-lg border border-red-500 px-3 py-2 text-red-300">
+                          <button
+                            onClick={() => supprimerDevis(d)}
+                            disabled={isDevisImmutable(d)}
+                            title={isDevisImmutable(d) ? "Devis conservé comme preuve" : undefined}
+                            className="rounded-lg border border-red-500 px-3 py-2 text-red-300 disabled:cursor-not-allowed disabled:opacity-40"
+                          >
                             Supprimer
                           </button>
                         </td>

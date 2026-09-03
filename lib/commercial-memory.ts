@@ -829,36 +829,9 @@ export async function rowsFromCommercialMemoryFile(
     return matrixToRows(parseCsv(await file.text()), file.name);
   }
 
-  if (extension === "xlsx") {
-    const XLSX = await import("xlsx");
-    const workbook = XLSX.read(await file.arrayBuffer(), {
-      type: "array",
-      cellDates: true,
-    });
-    const firstSheetName = workbook.SheetNames[0];
-    const sheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
-
-    if (!sheet) {
-      return {
-        headers: [],
-        rows: [],
-        matrix: [],
-        detectedHeaderRow: 1,
-        headerCandidates: [],
-        metadata: EMPTY_DOCUMENT_METADATA,
-      };
-    }
-
-    const matrix = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      raw: false,
-      defval: "",
-    }) as unknown[][];
-
-    return matrixToRows(matrix, file.name);
-  }
-
-  throw new Error("Format non supporté. Utilise un fichier CSV ou XLSX.");
+  throw new Error(
+    "Format non supporté. Exporte le fichier au format CSV avant de l'importer."
+  );
 }
 
 export function detectCommercialMemoryMapping(

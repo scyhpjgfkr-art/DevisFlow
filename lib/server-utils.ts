@@ -14,6 +14,65 @@ export function escapeHtml(value: unknown) {
     .replaceAll("'", "&#39;");
 }
 
+function normalizeHttpOrigin(value: string) {
+  const url = new URL(value);
+
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("L'URL publique de l'application doit utiliser HTTP ou HTTPS.");
+  }
+
+  return url.origin;
+}
+
+export function getAppOrigin(request?: Request) {
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+
+  if (process.env.VERCEL_ENV === "preview" && vercelUrl) {
+    return normalizeHttpOrigin(`https://${vercelUrl}`);
+  }
+
+  const configuredUrl = process.env.NEXT_PUBLIC_APP_URL?.trim();
+
+  if (configuredUrl) {
+    return normalizeHttpOrigin(configuredUrl);
+  }
+
+  const productionUrl = process.env.VERCEL_PROJECT_PRODUCTION_URL?.trim();
+
+  if (productionUrl) {
+    return normalizeHttpOrigin(`https://${productionUrl}`);
+  }
+
+  if (vercelUrl) {
+    return normalizeHttpOrigin(`https://${vercelUrl}`);
+  }
+
+  if (process.env.NODE_ENV !== "production" && request) {
+    return normalizeHttpOrigin(request.url);
+  }
+
+  throw new Error("NEXT_PUBLIC_APP_URL manquante ou invalide.");
+}
+
+export function getTrustedDevisUrl(value: string | undefined, request: Request) {
+  if (!value) return undefined;
+
+  try {
+    const url = new URL(value);
+    const isDevisPath = /^\/devis\/[a-zA-Z0-9-]+\/?$/.test(url.pathname);
+
+    if (url.origin !== getAppOrigin(request) || !isDevisPath) {
+      return undefined;
+    }
+
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export async function requireSupabaseUser(
   request: Request
 ): Promise<{ user: User } | { errorResponse: NextResponse }> {

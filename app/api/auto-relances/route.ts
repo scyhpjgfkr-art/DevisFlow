@@ -4,7 +4,7 @@ import { Resend } from "resend";
 import Stripe from "stripe";
 import { getResendFromEmail, sendTransactionalEmail } from "@/lib/email-delivery";
 import { buildPremiumDocumentEmail } from "@/lib/email-templates";
-import { getErrorMessage } from "@/lib/server-utils";
+import { getAppOrigin, getErrorMessage } from "@/lib/server-utils";
 
 type RelanceRuleKey =
   | "devis_non_vu"
@@ -298,7 +298,7 @@ export async function GET(request: Request) {
     const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey);
     const resend = new Resend(resendApiKey);
     const stripe = stripeSecretKey ? new Stripe(stripeSecretKey) : null;
-    const origin = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const origin = getAppOrigin(request);
 
     const [{ data: devisData, error: devisError }, { data: facturesData, error: facturesError }] =
       await Promise.all([
